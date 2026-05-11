@@ -1,0 +1,10 @@
+[project]
+name = "willie-tp-pose-estimation"
+version = "0.1.0"
+description = "Simple MediaPipe pose estimation demo using a webcam."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mediapipe>=0.10.0,<0.10.22",
+    "opencv-python>=4.9.0",
+]
