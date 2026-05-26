@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+input_video/*
+!input_video/.gitkeep
+output_video/*
+!output_video/.gitkeep
+
+assistant_models/
+jobs/

@@ -1,0 +1,39 @@
+[project]
+name = "squat-analysis-api"
+version = "0.1.0"
+description = "Batch squat analysis for MP4 videos using MediaPipe and OpenCV."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mediapipe>=0.10.0,<0.10.22",
+    "numpy>=1.26.0",
+    "opencv-python>=4.9.0",
+]
+
+[project.optional-dependencies]
+assistant = [
+    "fastapi>=0.115.0",
+    "pillow>=10.0.0",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.30.0",
+    "falcon-perception[mlx] @ git+https://github.com/tiiuae/falcon-perception.git ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "accelerate>=0.33.0 ; sys_platform != 'darwin'",
+    "einops>=0.8.0 ; sys_platform != 'darwin'",
+    "falcon-perception[torch] @ git+https://github.com/tiiuae/falcon-perception.git ; sys_platform != 'darwin'",
+    "torch>=2.5.0 ; sys_platform != 'darwin'",
+    "transformers @ git+https://github.com/huggingface/transformers.git ; sys_platform != 'darwin'",
+]
+
+[project.scripts]
+squat-analysis = "squat_analysis_api.cli:main"
+squat-analysis-api-server = "squat_analysis_api.api_server:main"
+squat-assistant-server = "squat_analysis_api.assistant_server:main"
+squat-assistant-download = "squat_analysis_api.assistant_models:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
