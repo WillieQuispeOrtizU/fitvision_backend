@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -121,6 +123,39 @@ class ApiServerTest(unittest.TestCase):
             response = client.get("/api/jobs/abc/files/..%2Fsecret.txt")
 
             self.assertEqual(response.status_code, 404)
+
+    def test_job_status_survives_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs_dir = Path(tmp)
+
+            # First "process": persist a completed job and an interrupted one.
+            store = JobStore.load(jobs_dir)
+            store.create(job_id="done", mode="beginner", input_filename="a.mp4")
+            store.update("done", status="completed")
+            store.create(job_id="stuck", mode="beginner", input_filename="b.mp4")
+            store.update("stuck", status="processing")
+
+            # Simulate a server restart: a brand new store loads from disk.
+            reloaded = JobStore.load(jobs_dir)
+            self.assertEqual(reloaded.get("done").status, "completed")
+            stuck = reloaded.get("stuck")
+            self.assertEqual(stuck.status, "failed")
+            self.assertIn("restart", stuck.error)
+
+    def test_old_jobs_are_cleaned_up_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs_dir = Path(tmp)
+            old_job = jobs_dir / "old"
+            old_job.mkdir(parents=True)
+            (old_job / "marker").write_bytes(b"x")
+            # Backdate the directory well past the TTL.
+            past = time.time() - 48 * 3600
+            os.utime(old_job, (past, past))
+
+            client = TestClient(create_app(jobs_dir=jobs_dir, assistant_url="http://assistant.test"))
+            client.get("/api/health")
+
+            self.assertFalse(old_job.exists())
 
     def test_invalid_upload_mode_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

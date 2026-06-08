@@ -154,6 +154,7 @@ export default function App() {
 
 function JobProgress({ job }: { job: Job }) {
   const Icon = job.status === 'completed' ? CheckCircle2 : job.status === 'failed' ? XCircle : Clock3;
+  const showTimings = job.status === 'completed' && (job.video_seconds != null || job.assistant_seconds != null);
   return (
     <div className="rounded-md border border-line bg-white p-4">
       <div className="flex items-center gap-2 text-sm font-medium">
@@ -161,8 +162,31 @@ function JobProgress({ job }: { job: Job }) {
         <span className="capitalize">{job.status}</span>
       </div>
       <p className="mt-2 text-xs text-slate-500">Job {job.job_id}</p>
+      {showTimings && (
+        <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
+          {job.video_seconds != null && (
+            <div className="flex items-center gap-1">
+              <dt className="text-slate-500">Video processing</dt>
+              <dd className="font-medium tabular-nums">{formatSeconds(job.video_seconds)}</dd>
+            </div>
+          )}
+          {job.assistant_seconds != null && (
+            <div className="flex items-center gap-1">
+              <dt className="text-slate-500">LLM feedback</dt>
+              <dd className="font-medium tabular-nums">{formatSeconds(job.assistant_seconds)}</dd>
+            </div>
+          )}
+        </dl>
+      )}
     </div>
   );
+}
+
+function formatSeconds(value: number): string {
+  if (value < 60) return `${value.toFixed(1)}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  return `${minutes}m ${seconds}s`;
 }
 
 function EmptyResult() {

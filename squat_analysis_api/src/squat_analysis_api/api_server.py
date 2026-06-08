@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8000
 DEFAULT_ASSISTANT_URL = "http://127.0.0.1:7862"
 DEFAULT_JOBS_DIR = Path("jobs")
+DEFAULT_JOBS_TTL_HOURS = 24.0
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi"}
 
 
@@ -38,12 +40,23 @@ class JobState:
     report_url: str | None = None
     original_video_url: str | None = None
     annotated_video_url: str | None = None
+    video_seconds: float | None = None
+    assistant_seconds: float | None = None
 
 
 class JobStore:
-    def __init__(self) -> None:
+    def __init__(self, persist_dir: Path | None = None) -> None:
         self._jobs: dict[str, JobState] = {}
         self._lock = threading.Lock()
+        self._persist_dir = persist_dir
+
+    @classmethod
+    def load(cls, persist_dir: Path) -> "JobStore":
+        """Build a store that persists to disk and rehydrate any prior jobs so
+        status survives a server restart."""
+        store = cls(persist_dir=persist_dir)
+        store._rehydrate()
+        return store
 
     def create(self, *, job_id: str, mode: str, input_filename: str) -> JobState:
         job = JobState(
@@ -54,6 +67,7 @@ class JobStore:
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._persist(job)
         return job
 
     def get(self, job_id: str) -> JobState | None:
@@ -65,7 +79,36 @@ class JobStore:
             job = self._jobs[job_id]
             for key, value in changes.items():
                 setattr(job, key, value)
+            self._persist(job)
             return job
+
+    def _job_file(self, job_id: str) -> Path:
+        return self._persist_dir / job_id / "job.json"  # type: ignore[union-attr]
+
+    def _persist(self, job: JobState) -> None:
+        if self._persist_dir is None:
+            return
+        path = self._job_file(job.job_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(asdict(job)), encoding="utf-8")
+
+    def _rehydrate(self) -> None:
+        if self._persist_dir is None or not self._persist_dir.exists():
+            return
+        for job_file in sorted(self._persist_dir.glob("*/job.json")):
+            try:
+                data = json.loads(job_file.read_text(encoding="utf-8"))
+                job = JobState(**data)
+            except (json.JSONDecodeError, TypeError, OSError):
+                continue
+            # A job left mid-flight by a restart can never resume: the background
+            # task that owned it is gone. Surface it as failed rather than leaving
+            # the client polling a "processing" status forever.
+            if job.status in ("queued", "processing"):
+                job.status = "failed"
+                job.error = "Interrupted by server restart"
+            self._jobs[job.job_id] = job
+            self._persist(job)
 
 
 def create_app(
@@ -79,8 +122,9 @@ def create_app(
 
     jobs_root = (jobs_dir or Path(os.getenv("SQUAT_ANALYSIS_JOBS_DIR", DEFAULT_JOBS_DIR))).resolve()
     configured_assistant_url = assistant_url if assistant_url is not None else os.getenv("SQUAT_ASSISTANT_URL", DEFAULT_ASSISTANT_URL)
-    store = job_store or JobStore()
     jobs_root.mkdir(parents=True, exist_ok=True)
+    _cleanup_jobs(jobs_root, _jobs_ttl_hours())
+    store = job_store or JobStore.load(jobs_root)
 
     app = FastAPI(title="Squat Analysis Upload API")
     app.add_middleware(
@@ -191,6 +235,7 @@ def _process_job(
     report_path = output_dir / "analysis.json"
     try:
         store.update(job_id, status="processing", error=None)
+        started = time.perf_counter()
         process_video(
             input_path,
             output_path,
@@ -201,14 +246,31 @@ def _process_job(
             report_path=report_path,
             frame_dir=frame_dir,
         )
+        total_seconds = time.perf_counter() - started
+
+        # The assistant (Falcon + Gemma) latency is recorded in the report. The
+        # remaining time is the MediaPipe analysis + annotated-video encode.
+        assistant_seconds = _assistant_latency(report_path)
+        video_seconds = total_seconds - (assistant_seconds or 0.0)
         store.update(
             job_id,
             status="completed",
             report_url=f"/api/jobs/{job_id}/report",
             annotated_video_url=_file_url(job_id, output_path.name),
+            video_seconds=round(max(0.0, video_seconds), 1),
+            assistant_seconds=round(assistant_seconds, 1) if assistant_seconds else None,
         )
     except Exception as exc:
         store.update(job_id, status="failed", error=str(exc))
+
+
+def _assistant_latency(report_path: Path) -> float | None:
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    latency = report.get("assistant", {}).get("latency_seconds")
+    return float(latency) if isinstance(latency, (int, float)) else None
 
 
 def _job_payload(job: JobState) -> dict[str, Any]:
@@ -272,6 +334,32 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _jobs_ttl_hours() -> float:
+    raw = os.getenv("SQUAT_ANALYSIS_JOBS_TTL_HOURS")
+    if not raw:
+        return DEFAULT_JOBS_TTL_HOURS
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_JOBS_TTL_HOURS
+
+
+def _cleanup_jobs(jobs_root: Path, ttl_hours: float) -> None:
+    """Remove job directories older than the TTL so jobs/ does not grow without
+    bound. A non-positive TTL disables cleanup."""
+    if ttl_hours <= 0 or not jobs_root.exists():
+        return
+    cutoff = time.time() - ttl_hours * 3600
+    for job_dir in jobs_root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        try:
+            if job_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(job_dir, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _cors_origins() -> list[str]:

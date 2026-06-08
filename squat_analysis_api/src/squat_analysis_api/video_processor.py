@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +97,10 @@ def process_video(
         capture.release()
         writer.release()
 
+    # OpenCV writes mp4v (MPEG-4 Part 2), which browsers will not play inline.
+    # Re-encode to H.264 so the annotated video plays in the web frontend.
+    _transcode_to_h264(output_path)
+
     result_report_path = report_path
     if write_json_report or assistant_url:
         result_report_path = result_report_path or report_path_for(input_path, output_path.parent)
@@ -136,6 +143,46 @@ def process_video(
         stats=analyzer.stats,
         report_path=result_report_path,
     )
+
+
+def _transcode_to_h264(path: Path) -> None:
+    """Re-encode an mp4 in place to H.264/yuv420p with a web-streaming layout.
+
+    OpenCV's mp4v output is MPEG-4 Part 2, which browsers refuse to play inline.
+    Requires ffmpeg on PATH; if it is missing or the encode fails, the original
+    file is left untouched so analysis still completes (the video just may not
+    play in some browsers).
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None or not path.exists():
+        return
+
+    transcoded = path.with_name(f"{path.stem}.h264{path.suffix}")
+    command = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(path),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-an",
+        str(transcoded),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False)
+    except OSError:
+        return
+
+    if result.returncode == 0 and transcoded.exists():
+        os.replace(transcoded, path)
+    else:
+        transcoded.unlink(missing_ok=True)
 
 
 def _save_key_frame_images(

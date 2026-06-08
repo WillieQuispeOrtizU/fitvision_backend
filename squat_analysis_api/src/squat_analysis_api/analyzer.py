@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 import cv2
@@ -58,10 +57,14 @@ class SquatFrameAnalyzer:
             },
             "nose": 0,
         }
+        # Timing is driven by the video timestamp passed into process(), not the
+        # wall clock, so rep counting is deterministic and independent of how fast
+        # frames are decoded. self._now holds the current frame's video time.
+        self._now = 0.0
         self.state_tracker = {
             "state_seq": [],
-            "start_inactive_time": time.perf_counter(),
-            "start_inactive_time_front": time.perf_counter(),
+            "start_inactive_time": 0.0,
+            "start_inactive_time_front": 0.0,
             "INACTIVE_TIME": 0.0,
             "INACTIVE_TIME_FRONT": 0.0,
             "DISPLAY_TEXT": np.full((4,), False),
@@ -100,10 +103,13 @@ class SquatFrameAnalyzer:
 
     @property
     def stats(self) -> SquatStats:
-        return SquatStats(
-            correct=int(self.state_tracker["SQUAT_COUNT"]),
-            incorrect=int(self.state_tracker["IMPROPER_SQUAT"]),
-        )
+        # Derive the authoritative totals from the completed reps rather than the
+        # live SQUAT_COUNT/IMPROPER_SQUAT counters. Those counters are reset to 0
+        # by the on-screen inactivity logic (a live-overlay behavior), which would
+        # otherwise corrupt the totals written to the report for a recorded video.
+        correct = sum(1 for rep in self.completed_reps if rep.correct)
+        incorrect = sum(1 for rep in self.completed_reps if not rep.correct)
+        return SquatStats(correct=correct, incorrect=incorrect)
 
     @property
     def reps(self) -> list[RepAnalysis]:
@@ -181,6 +187,7 @@ class SquatFrameAnalyzer:
             frame_index = self._internal_frame_index
         if timestamp is None:
             timestamp = 0.0
+        self._now = timestamp
         self._internal_frame_index = max(self._internal_frame_index, frame_index + 1)
 
         frame_height, frame_width, _ = frame.shape
@@ -209,7 +216,7 @@ class SquatFrameAnalyzer:
             )
 
         self.state_tracker["INACTIVE_TIME_FRONT"] = 0.0
-        self.state_tracker["start_inactive_time_front"] = time.perf_counter()
+        self.state_tracker["start_inactive_time_front"] = self._now
 
         dist_l_sh_foot = abs(left_foot[1] - left_shldr[1])
         dist_r_sh_foot = abs(right_foot[1] - right_shldr[1])
@@ -276,7 +283,7 @@ class SquatFrameAnalyzer:
         self._show_feedback(frame)
 
         if display_inactivity:
-            self.state_tracker["start_inactive_time"] = time.perf_counter()
+            self.state_tracker["start_inactive_time"] = self._now
             self.state_tracker["INACTIVE_TIME"] = 0.0
 
         cv2.putText(frame, str(int(hip_vertical_angle)), (hip_text_x, hip[1]), self.font, 0.6, self.colors["light_green"], 2, self.linetype)
@@ -434,7 +441,7 @@ class SquatFrameAnalyzer:
 
     def _update_inactivity(self) -> bool:
         if self.state_tracker["curr_state"] == self.state_tracker["prev_state"]:
-            end_time = time.perf_counter()
+            end_time = self._now
             self.state_tracker["INACTIVE_TIME"] += end_time - self.state_tracker["start_inactive_time"]
             self.state_tracker["start_inactive_time"] = end_time
             if self.state_tracker["INACTIVE_TIME"] >= self.thresholds["INACTIVE_THRESH"]:
@@ -442,7 +449,7 @@ class SquatFrameAnalyzer:
                 self.state_tracker["IMPROPER_SQUAT"] = 0
                 return True
         else:
-            self.state_tracker["start_inactive_time"] = time.perf_counter()
+            self.state_tracker["start_inactive_time"] = self._now
             self.state_tracker["INACTIVE_TIME"] = 0.0
         return False
 
@@ -456,7 +463,7 @@ class SquatFrameAnalyzer:
         left_shldr: np.ndarray,
         right_shldr: np.ndarray,
     ) -> np.ndarray:
-        end_time = time.perf_counter()
+        end_time = self._now
         self.state_tracker["INACTIVE_TIME_FRONT"] += end_time - self.state_tracker["start_inactive_time_front"]
         self.state_tracker["start_inactive_time_front"] = end_time
 
@@ -464,7 +471,7 @@ class SquatFrameAnalyzer:
             self.state_tracker["SQUAT_COUNT"] = 0
             self.state_tracker["IMPROPER_SQUAT"] = 0
             self.state_tracker["INACTIVE_TIME_FRONT"] = 0.0
-            self.state_tracker["start_inactive_time_front"] = time.perf_counter()
+            self.state_tracker["start_inactive_time_front"] = self._now
 
         cv2.circle(frame, nose_coord, 7, self.colors["white"], -1)
         cv2.circle(frame, left_shldr, 7, self.colors["yellow"], -1)
@@ -490,7 +497,7 @@ class SquatFrameAnalyzer:
             font_scale=0.65,
             text_color_bg=(255, 153, 0),
         )
-        self.state_tracker["start_inactive_time"] = time.perf_counter()
+        self.state_tracker["start_inactive_time"] = self._now
         self.state_tracker["INACTIVE_TIME"] = 0.0
         self.state_tracker["prev_state"] = None
         self.state_tracker["curr_state"] = None
@@ -500,7 +507,7 @@ class SquatFrameAnalyzer:
         if self.flip_frame:
             frame = cv2.flip(frame, 1)
 
-        end_time = time.perf_counter()
+        end_time = self._now
         self.state_tracker["INACTIVE_TIME"] += end_time - self.state_tracker["start_inactive_time"]
         if self.state_tracker["INACTIVE_TIME"] >= self.thresholds["INACTIVE_THRESH"]:
             self.state_tracker["SQUAT_COUNT"] = 0
@@ -515,5 +522,5 @@ class SquatFrameAnalyzer:
         self.state_tracker["INCORRECT_POSTURE"] = False
         self.state_tracker["DISPLAY_TEXT"] = np.full((4,), False)
         self.state_tracker["COUNT_FRAMES"] = np.zeros((4,), dtype=np.int64)
-        self.state_tracker["start_inactive_time_front"] = time.perf_counter()
+        self.state_tracker["start_inactive_time_front"] = self._now
         return frame

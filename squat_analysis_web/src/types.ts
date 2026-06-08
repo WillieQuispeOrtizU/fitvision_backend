@@ -10,6 +10,8 @@ export interface Job {
   report_url: string | null;
   original_video_url: string | null;
   annotated_video_url: string | null;
+  video_seconds?: number | null;
+  assistant_seconds?: number | null;
 }
 
 export interface AnalysisReport {
