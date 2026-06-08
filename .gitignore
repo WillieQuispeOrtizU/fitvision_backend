@@ -8,7 +8,7 @@ __pycache__/
 #Files
 .venv
 venv/
-
+.DS_Store
 # Distribution / packaging
 .Python
 build/
