@@ -320,6 +320,10 @@ class SquatFrameAnalyzer:
         issues = []
         if hip_angle > self.thresholds["HIP_THRESH"][1]:
             self.state_tracker["DISPLAY_TEXT"][0] = True
+            # Excessive torso lean is a genuine form fault, so it must fail the rep
+            # (same as knee_over_toe / squat_too_deep below). Without this the lean
+            # was detected and captioned but silently ignored by the verdict.
+            self.state_tracker["INCORRECT_POSTURE"] = True
             issues.append(self.feedback_issue_map[0])
         elif hip_angle < self.thresholds["HIP_THRESH"][0] and self.state_tracker["state_seq"].count("s2") == 1:
             self.state_tracker["DISPLAY_TEXT"][1] = True

@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 #Files
+eval/Bad/*
+eval/Good/*
 .venv
 venv/
 .DS_Store
