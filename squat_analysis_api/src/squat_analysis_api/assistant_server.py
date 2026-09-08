@@ -180,6 +180,7 @@ class TorchFalconBoxAdapter(_FalconBoxAdapterBase):
             temperature=0.0,
             stop_token_ids=stop_token_ids,
             seed=42,
+            task="detection",
         )
         return self._parse_bboxes(aux[0].bboxes_raw)
 
