@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from squat_analysis_api.assistant_server import _select_key_frames, analyze_squat_payload
+from squat_analysis_api.assistant_server import (
+    EmptyFalconAdapter,
+    HeuristicFeedbackAdapter,
+    _build_gemma_prompt,
+    _feedback_from_model_text,
+    _heuristic_feedback,
+    _select_key_frames,
+    analyze_squat_payload,
+)
 
 
 class _FakeFalcon:
@@ -26,12 +35,12 @@ class _FakeGemma:
 
     def generate(self, payload, detections):
         return {
-            "overall_summary": "One rep reviewed.",
+            "overall_summary": "Se revisó una repetición.",
             "rep_feedback": [
                 {
                     "rep_id": 1,
-                    "summary": "Rep reviewed.",
-                    "cues": ["Brace."],
+                    "summary": "La repetición fue revisada.",
+                    "cues": ["Mantén el abdomen firme."],
                     "severity": "info",
                 }
             ],
@@ -47,10 +56,185 @@ class AssistantServerTest(unittest.TestCase):
 
         result = analyze_squat_payload(payload, falcon_adapter=_FakeFalcon(), gemma_adapter=_FakeGemma())
 
-        self.assertEqual(result["overall_summary"], "One rep reviewed.")
+        self.assertEqual(result["overall_summary"], "Se revisó una repetición.")
         self.assertEqual(result["model_names"]["falcon"], "fake-falcon")
         self.assertEqual(result["model_names"]["gemma"], "fake-gemma")
         self.assertEqual(result["rep_feedback"][0]["rep_id"], 1)
+
+    def test_analyze_squat_payload_preserves_response_contract(self):
+        payload = _feedback_payload()
+
+        result = analyze_squat_payload(
+            payload,
+            falcon_adapter=EmptyFalconAdapter(),
+            gemma_adapter=HeuristicFeedbackAdapter(),
+        )
+
+        self.assertEqual(
+            set(result),
+            {"overall_summary", "rep_feedback", "detections", "model_names"},
+        )
+        self.assertIsInstance(result["overall_summary"], str)
+        self.assertEqual(result["detections"], [])
+        self.assertEqual(
+            result["model_names"],
+            {"falcon": "empty-test-adapter", "gemma": "heuristic-test-adapter"},
+        )
+        self.assertEqual(len(result["rep_feedback"]), 2)
+        for item in result["rep_feedback"]:
+            self.assertEqual(set(item), {"rep_id", "summary", "cues", "severity"})
+            self.assertIsInstance(item["rep_id"], int)
+            self.assertIsInstance(item["summary"], str)
+            self.assertIsInstance(item["cues"], list)
+            self.assertIn(item["severity"], {"info", "warning"})
+
+
+class SpanishFeedbackTest(unittest.TestCase):
+    def test_heuristic_feedback_is_spanish_for_every_supported_issue(self):
+        payload = _feedback_payload()
+
+        result = _heuristic_feedback(payload)
+
+        self.assertEqual(set(result), {"overall_summary", "rep_feedback"})
+        self.assertEqual(
+            result["overall_summary"],
+            "Se analizaron 2 repeticiones: 1 correcta y 1 incorrecta.",
+        )
+        self.assertEqual(
+            result["rep_feedback"],
+            [
+                {
+                    "rep_id": 1,
+                    "summary": "La repetición fue clasificada como correcta según las métricas de MediaPipe.",
+                    "cues": [],
+                    "severity": "info",
+                },
+                {
+                    "rep_id": 2,
+                    "summary": "La repetición fue clasificada como incorrecta según las métricas de MediaPipe.",
+                    "cues": [
+                        "Evita inclinar el torso hacia atrás y mantén una postura estable.",
+                        "Mantén el abdomen firme y evita que el pecho caiga durante el descenso.",
+                        "Controla el desplazamiento de las rodillas y mantén el apoyo estable sobre el pie.",
+                        "Reduce ligeramente la profundidad si la postura comienza a perder estabilidad.",
+                        "Desciende un poco más antes de iniciar el ascenso.",
+                    ],
+                    "severity": "warning",
+                },
+            ],
+        )
+        self.assertEqual(
+            payload["reps"][1]["issue_tags"],
+            ["bend_backwards", "bend_forward", "knee_over_toe", "squat_too_deep", "lower_hips"],
+        )
+
+    def test_overall_summary_uses_singular_concordance(self):
+        result = _heuristic_feedback(
+            {
+                "stats": {"total_reps": 1, "correct": 1, "incorrect": 0},
+                "reps": [],
+            }
+        )
+
+        self.assertEqual(
+            result["overall_summary"],
+            "Se analizó 1 repetición: 1 correcta y 0 incorrectas.",
+        )
+
+    def test_overall_summary_uses_plural_concordance(self):
+        result = _heuristic_feedback(
+            {
+                "stats": {"total_reps": 4, "correct": 2, "incorrect": 2},
+                "reps": [],
+            }
+        )
+
+        self.assertEqual(
+            result["overall_summary"],
+            "Se analizaron 4 repeticiones: 2 correctas y 2 incorrectas.",
+        )
+
+    def test_heuristic_feedback_does_not_contain_legacy_english_copy(self):
+        serialized = json.dumps(_heuristic_feedback(_feedback_payload()), ensure_ascii=False)
+        legacy_copy = (
+            "Analyzed 2 reps: 1 correct and 1 incorrect.",
+            "Counted as a correct rep based on the MediaPipe angle thresholds.",
+            "Counted as an incorrect rep based on the MediaPipe angle thresholds.",
+            "Keep your ribs stacked over your hips instead of leaning back.",
+            "Brace and keep your chest from dropping during the descent.",
+            "Control knee travel and keep pressure through the mid-foot.",
+            "Stop slightly higher if depth causes posture to break.",
+            "Aim for a little more depth before standing up.",
+        )
+
+        for text in legacy_copy:
+            with self.subTest(text=text):
+                self.assertNotIn(text, serialized)
+
+    def test_invalid_model_json_uses_complete_spanish_fallback(self):
+        payload = _feedback_payload()
+
+        result = _feedback_from_model_text("This is not valid JSON.", payload)
+
+        self.assertEqual(result, _heuristic_feedback(payload))
+        self.assertNotIn("This is not valid JSON.", json.dumps(result, ensure_ascii=False))
+
+
+class GemmaPromptTest(unittest.TestCase):
+    def test_prompt_requires_spanish_json_and_preserves_internal_identifiers(self):
+        payload = _feedback_payload()
+        prompt = _build_gemma_prompt(payload, [{"query": "person"}])
+        prompt_lower = prompt.lower()
+
+        self.assertIn("siempre en español", prompt_lower)
+        self.assertIn("json válido", prompt_lower)
+        self.assertIn("mediapipe", prompt_lower)
+        self.assertIn("fuente de verdad", prompt_lower)
+        self.assertIn("contexto visual adicional", prompt_lower)
+        self.assertIn("no contradigas", prompt_lower)
+        self.assertIn("consejos médicos", prompt_lower)
+        for key in ("overall_summary", "rep_feedback", "rep_id", "summary", "cues", "severity"):
+            with self.subTest(key=key):
+                self.assertIn(key, prompt)
+
+        json_start = prompt.rfind("\n{")
+        self.assertGreaterEqual(json_start, 0)
+        analysis_data = json.loads(prompt[json_start + 1 :])
+        self.assertEqual(
+            analysis_data["reps"][1]["issue_tags"],
+            ["bend_backwards", "bend_forward", "knee_over_toe", "squat_too_deep", "lower_hips"],
+        )
+
+
+def _feedback_payload():
+    return {
+        "stats": {"total_reps": 2, "correct": 1, "incorrect": 1},
+        "reps": [
+            {
+                "rep_id": 1,
+                "correct": True,
+                "issue_tags": [],
+                "angles": {"min_knee": 82.0},
+                "duration": 1.2,
+                "key_frames": {"bottom": "/missing-1.jpg"},
+            },
+            {
+                "rep_id": 2,
+                "correct": False,
+                "issue_tags": [
+                    "bend_backwards",
+                    "bend_forward",
+                    "knee_over_toe",
+                    "squat_too_deep",
+                    "lower_hips",
+                ],
+                "worst_issue": "bend_forward",
+                "angles": {"min_knee": 121.0},
+                "duration": 1.4,
+                "key_frames": {"bottom": "/missing-2.jpg"},
+            },
+        ],
+    }
 
 
 class SelectKeyFramesTest(unittest.TestCase):

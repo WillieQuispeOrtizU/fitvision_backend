@@ -243,11 +243,7 @@ class TorchGemmaFeedbackAdapter:
         with torch.inference_mode():
             outputs = self._model.generate(**inputs, max_new_tokens=1200, temperature=0.1, do_sample=True)
         text = self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
-        parsed = _parse_json_object(text)
-        if parsed is None:
-            parsed = _heuristic_feedback(payload)
-            parsed["overall_summary"] = text.strip() or parsed["overall_summary"]
-        return parsed
+        return _feedback_from_model_text(text, payload)
 
 
 class MlxFalconBoxAdapter(_FalconBoxAdapterBase):
@@ -337,11 +333,7 @@ class MlxGemmaFeedbackAdapter:
             temperature=0.1,
         )
         text = result.text if hasattr(result, "text") else str(result)
-        parsed = _parse_json_object(text)
-        if parsed is None:
-            parsed = _heuristic_feedback(payload)
-            parsed["overall_summary"] = text.strip() or parsed["overall_summary"]
-        return parsed
+        return _feedback_from_model_text(text, payload)
 
 
 class HeuristicFeedbackAdapter:
@@ -452,11 +444,19 @@ def _build_gemma_prompt(payload: dict[str, Any], detections: list[dict[str, Any]
         "detections": detections[:50],
     }
     return (
-        "You are a concise strength-coaching assistant. MediaPipe metrics are the source of truth. "
-        "Use the images only to add visual context. Do not provide medical advice. "
-        "Return only valid JSON with keys: overall_summary, rep_feedback. "
-        "rep_feedback must contain objects with rep_id, summary, cues, severity.\n\n"
-        f"Analysis data:\n{json.dumps(compact_payload, indent=2)}"
+        "Eres un asistente breve de entrenamiento de fuerza para usuarios de gimnasio. "
+        "Responde siempre en español claro, natural y conciso. "
+        "Devuelve únicamente un objeto JSON válido, sin markdown, bloques de código ni texto adicional. "
+        "Conserva exactamente en inglés las claves JSON overall_summary, rep_feedback, rep_id, "
+        "summary, cues y severity. rep_feedback debe ser una lista de objetos que contengan "
+        "rep_id, summary, cues y severity. Todo el contenido textual visible de overall_summary, "
+        "summary y cada elemento de cues debe estar en español. "
+        "Mantén en inglés y sin modificar los identificadores internos como issue_tags y sus valores, "
+        "así como los valores internos de severity. "
+        "Las métricas calculadas por MediaPipe son la fuente de verdad: no contradigas ni cambies "
+        "stats, correct, rep_id, angles, issue_tags ni la clasificación de cada repetición. "
+        "Usa las imágenes únicamente como contexto visual adicional. No añadas consejos médicos.\n\n"
+        f"Datos del análisis:\n{json.dumps(compact_payload, indent=2)}"
     )
 
 
@@ -472,23 +472,37 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _feedback_from_model_text(
+    text: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Use Gemma's JSON or a fully Spanish heuristic fallback.
+
+    Free-form model output is never exposed when JSON parsing fails because it
+    may ignore the requested language, schema, or safety constraints.
+    """
+
+    parsed = _parse_json_object(text)
+    return parsed if parsed is not None else _heuristic_feedback(payload)
+
+
 def _heuristic_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     issue_cues = {
-        "bend_backwards": "Keep your ribs stacked over your hips instead of leaning back.",
-        "bend_forward": "Brace and keep your chest from dropping during the descent.",
-        "knee_over_toe": "Control knee travel and keep pressure through the mid-foot.",
-        "squat_too_deep": "Stop slightly higher if depth causes posture to break.",
-        "lower_hips": "Aim for a little more depth before standing up.",
+        "bend_backwards": "Evita inclinar el torso hacia atrás y mantén una postura estable.",
+        "bend_forward": "Mantén el abdomen firme y evita que el pecho caiga durante el descenso.",
+        "knee_over_toe": "Controla el desplazamiento de las rodillas y mantén el apoyo estable sobre el pie.",
+        "squat_too_deep": "Reduce ligeramente la profundidad si la postura comienza a perder estabilidad.",
+        "lower_hips": "Desciende un poco más antes de iniciar el ascenso.",
     }
     rep_feedback = []
     for rep in payload.get("reps", []):
         issues = rep.get("issue_tags", [])
         cues = [issue_cues[issue] for issue in issues if issue in issue_cues]
         if rep.get("correct"):
-            summary = "Counted as a correct rep based on the MediaPipe angle thresholds."
+            summary = "La repetición fue clasificada como correcta según las métricas de MediaPipe."
             severity = "info"
         else:
-            summary = "Counted as an incorrect rep based on the MediaPipe angle thresholds."
+            summary = "La repetición fue clasificada como incorrecta según las métricas de MediaPipe."
             severity = "warning"
         rep_feedback.append(
             {
@@ -500,9 +514,19 @@ def _heuristic_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     stats = payload.get("stats", {})
+    total_reps = stats.get("total_reps", 0)
+    correct_reps = stats.get("correct", 0)
+    incorrect_reps = stats.get("incorrect", 0)
+    analyzed = (
+        "Se analizó 1 repetición"
+        if total_reps == 1
+        else f"Se analizaron {total_reps} repeticiones"
+    )
+    correct_label = "correcta" if correct_reps == 1 else "correctas"
+    incorrect_label = "incorrecta" if incorrect_reps == 1 else "incorrectas"
     overall = (
-        f"Analyzed {stats.get('total_reps', 0)} reps: "
-        f"{stats.get('correct', 0)} correct and {stats.get('incorrect', 0)} incorrect."
+        f"{analyzed}: {correct_reps} {correct_label} y "
+        f"{incorrect_reps} {incorrect_label}."
     )
     return {"overall_summary": overall, "rep_feedback": rep_feedback}
 
