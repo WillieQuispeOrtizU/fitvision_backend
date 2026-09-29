@@ -205,6 +205,54 @@ class GemmaPromptTest(unittest.TestCase):
             ["bend_backwards", "bend_forward", "knee_over_toe", "squat_too_deep", "lower_hips"],
         )
 
+    def test_prompt_allows_only_maintenance_for_correct_rep_without_issues(self):
+        payload = {
+            "stats": {"total_reps": 1, "correct": 1, "incorrect": 0},
+            "reps": [{"rep_id": 1, "correct": True, "issue_tags": []}],
+        }
+
+        prompt = _build_gemma_prompt(payload, [{"query": "person"}])
+        prompt_lower = prompt.lower()
+
+        self.assertIn("issue_tags como la lista exhaustiva", prompt_lower)
+        self.assertIn("correct es true e issue_tags está vacío", prompt_lower)
+        self.assertIn('[' + '"Mantén esta ejecución controlada y estable."' + ']', prompt)
+        self.assertIn("no recomiendes bajar más", prompt_lower)
+        self.assertIn("ni insinúes defectos", prompt_lower)
+        self.assertIn("detecciones de falcon", prompt_lower)
+        self.assertIn("no pueden justificar ni inventar errores biomecánicos", prompt_lower)
+        self.assertIn("frases completas y naturales", prompt_lower)
+        self.assertIn("espacios normales entre todas las palabras", prompt_lower)
+
+        analysis_data = _analysis_data_from_prompt(prompt)
+        self.assertIs(analysis_data["reps"][0]["correct"], True)
+        self.assertEqual(analysis_data["reps"][0]["issue_tags"], [])
+
+    def test_prompt_restricts_feedback_to_the_single_reported_issue(self):
+        payload = {
+            "stats": {"total_reps": 1, "correct": 0, "incorrect": 1},
+            "reps": [
+                {
+                    "rep_id": 1,
+                    "correct": False,
+                    "issue_tags": ["bend_forward"],
+                    "worst_issue": "bend_forward",
+                }
+            ],
+        }
+
+        prompt = _build_gemma_prompt(payload, [{"query": "person"}])
+        prompt_lower = prompt.lower()
+
+        self.assertIn("debe corresponder exclusivamente", prompt_lower)
+        self.assertIn("un defecto ausente", prompt_lower)
+        self.assertIn("no estén respaldadas por issue_tags", prompt_lower)
+        analysis_data = _analysis_data_from_prompt(prompt)
+        self.assertEqual(
+            analysis_data["reps"][0]["issue_tags"],
+            ["bend_forward"],
+        )
+
 
 def _feedback_payload():
     return {
@@ -235,6 +283,13 @@ def _feedback_payload():
             },
         ],
     }
+
+
+def _analysis_data_from_prompt(prompt):
+    json_start = prompt.rfind("\n{")
+    if json_start < 0:
+        raise AssertionError("Prompt does not contain embedded analysis JSON")
+    return json.loads(prompt[json_start + 1 :])
 
 
 class SelectKeyFramesTest(unittest.TestCase):
