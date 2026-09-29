@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import threading
@@ -15,11 +16,21 @@ from squat_analysis_api.assistant_client import AssistantClient
 from squat_analysis_api.video_processor import process_video
 
 try:
-    from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi import (
+        BackgroundTasks,
+        Depends,
+        FastAPI,
+        File,
+        Form,
+        HTTPException,
+        UploadFile,
+        status,
+    )
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
 except ImportError:
-    BackgroundTasks = FastAPI = File = Form = HTTPException = UploadFile = None
+    BackgroundTasks = Depends = FastAPI = File = Form = HTTPException = UploadFile = None
+    status = None
     CORSMiddleware = FileResponse = None
 
 
@@ -29,6 +40,10 @@ DEFAULT_ASSISTANT_URL = "http://127.0.0.1:7862"
 DEFAULT_JOBS_DIR = Path("jobs")
 DEFAULT_JOBS_TTL_HOURS = 24.0
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi"}
+INTERRUPTED_JOB_ERROR = "Interrupted by server restart"
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -83,6 +98,20 @@ class JobStore:
             self._persist(job)
             return job
 
+    def delete(self, job_id: str) -> None:
+        """Forget a job whose durable evaluation could not be created."""
+        with self._lock:
+            self._jobs.pop(job_id, None)
+
+    def interrupted_job_ids(self) -> tuple[str, ...]:
+        """Return jobs that were left in flight when this store rehydrated."""
+        with self._lock:
+            return tuple(
+                job.job_id
+                for job in self._jobs.values()
+                if job.status == "failed" and job.error == INTERRUPTED_JOB_ERROR
+            )
+
     def _job_file(self, job_id: str) -> Path:
         return self._persist_dir / job_id / "job.json"  # type: ignore[union-attr]
 
@@ -107,7 +136,7 @@ class JobStore:
             # the client polling a "processing" status forever.
             if job.status in ("queued", "processing"):
                 job.status = "failed"
-                job.error = "Interrupted by server restart"
+                job.error = INTERRUPTED_JOB_ERROR
             self._jobs[job.job_id] = job
             self._persist(job)
 
@@ -118,6 +147,7 @@ def create_app(
     assistant_url: str | None = None,
     job_store: JobStore | None = None,
     database_healthcheck: Callable[[], str] | None = None,
+    session_factory: Callable[[], Any] | None = None,
 ):
     if FastAPI is None:
         raise RuntimeError("Install assistant extras before running the API server: uv sync --extra assistant")
@@ -128,12 +158,46 @@ def create_app(
     _cleanup_jobs(jobs_root, _jobs_ttl_hours())
     store = job_store or JobStore.load(jobs_root)
 
+    from sqlalchemy import select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from squat_analysis_api.auth import get_current_user
     from squat_analysis_api.auth_routes import router as auth_router
-    from squat_analysis_api.database import check_database_connection
+    from squat_analysis_api.database import (
+        check_database_connection,
+        get_db,
+        get_session_factory,
+    )
+    from squat_analysis_api.evaluation_routes import router as evaluation_router
+    from squat_analysis_api.evaluation_service import (
+        create_queued_evaluation,
+        fail_interrupted_evaluations,
+    )
+    from squat_analysis_api.models import Evaluation
 
     configured_database_healthcheck = (
         database_healthcheck or check_database_connection
     )
+    configured_session_factory = session_factory
+    if configured_session_factory is None:
+        configured_session_factory = lambda: get_session_factory()()
+
+    interrupted_job_ids = store.interrupted_job_ids()
+    if interrupted_job_ids:
+        try:
+            fail_interrupted_evaluations(
+                configured_session_factory,
+                job_ids=interrupted_job_ids,
+                error=INTERRUPTED_JOB_ERROR,
+            )
+        except Exception:
+            # Database availability should not prevent the API from starting.
+            # The helper has rolled back; keep the disk-backed job failure and
+            # make the reconciliation problem explicit in server logs.
+            logger.exception(
+                "Could not reconcile %d interrupted evaluation(s)",
+                len(interrupted_job_ids),
+            )
 
     app = FastAPI(title="Squat Analysis Upload API")
     app.add_middleware(
@@ -144,6 +208,7 @@ def create_app(
         allow_headers=["*"],
     )
     app.include_router(auth_router)
+    app.include_router(evaluation_router)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -159,6 +224,8 @@ def create_app(
         background_tasks: BackgroundTasks,
         video: UploadFile = File(...),
         mode: str = Form("beginner"),
+        current_user=Depends(get_current_user),
+        db=Depends(get_db),
     ) -> dict[str, Any]:
         if mode not in {"beginner", "pro"}:
             raise HTTPException(status_code=400, detail="mode must be beginner or pro")
@@ -176,8 +243,27 @@ def create_app(
         with input_path.open("wb") as handle:
             shutil.copyfileobj(video.file, handle)
 
+        original_video_url = _file_url(job_id, input_name)
         job = store.create(job_id=job_id, mode=mode, input_filename=input_name)
-        store.update(job_id, original_video_url=_file_url(job_id, input_name))
+        store.update(job_id, original_video_url=original_video_url)
+        try:
+            create_queued_evaluation(
+                db,
+                user_id=current_user.id,
+                job_id=job_id,
+                mode=mode,
+                input_filename=input_name,
+                original_video_url=original_video_url,
+            )
+        except SQLAlchemyError as exc:
+            db.rollback()
+            store.delete(job_id)
+            shutil.rmtree(job_dir, ignore_errors=True)
+            logger.exception("Could not persist queued evaluation for job %s", job_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="database is unavailable",
+            ) from exc
         background_tasks.add_task(
             _process_job,
             store=store,
@@ -186,18 +272,43 @@ def create_app(
             input_path=input_path,
             mode=mode,
             assistant_url=configured_assistant_url,
+            session_factory=configured_session_factory,
         )
         return _job_payload(job)
 
     @app.get("/api/jobs/{job_id}")
-    def get_job(job_id: str) -> dict[str, Any]:
+    def get_job(
+        job_id: str,
+        current_user=Depends(get_current_user),
+        db=Depends(get_db),
+    ) -> dict[str, Any]:
+        evaluation = db.scalar(
+            select(Evaluation.id).where(
+                Evaluation.job_id == job_id,
+                Evaluation.user_id == current_user.id,
+            )
+        )
+        if evaluation is None:
+            raise HTTPException(status_code=404, detail="job not found")
         job = store.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
         return _job_payload(job)
 
     @app.get("/api/jobs/{job_id}/report")
-    def get_report(job_id: str) -> dict[str, Any]:
+    def get_report(
+        job_id: str,
+        current_user=Depends(get_current_user),
+        db=Depends(get_db),
+    ) -> dict[str, Any]:
+        evaluation = db.scalar(
+            select(Evaluation.id).where(
+                Evaluation.job_id == job_id,
+                Evaluation.user_id == current_user.id,
+            )
+        )
+        if evaluation is None:
+            raise HTTPException(status_code=404, detail="job not found")
         job = store.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
@@ -239,12 +350,28 @@ def _process_job(
     input_path: Path,
     mode: str,
     assistant_url: str,
+    session_factory: Callable[[], Any],
 ) -> None:
+    from squat_analysis_api.evaluation_service import (
+        complete_evaluation,
+        fail_evaluation,
+        mark_evaluation_processing,
+    )
+
     output_dir = jobs_root / job_id / "output"
     frame_dir = jobs_root / job_id / "frames"
     output_path = output_dir / f"{input_path.stem}_analyzed.mp4"
     report_path = output_dir / "analysis.json"
     try:
+        # A single worker claims queued work. Retries that find it already
+        # processing or completed stop here, which also prevents double-counting
+        # progress for the same evaluation.
+        if not mark_evaluation_processing(session_factory, job_id=job_id):
+            logger.info(
+                "Skipping duplicate processing attempt for job_id=%s",
+                job_id,
+            )
+            return
         store.update(job_id, status="processing", error=None)
         started = time.perf_counter()
         process_video(
@@ -258,21 +385,57 @@ def _process_job(
             frame_dir=frame_dir,
         )
         total_seconds = time.perf_counter() - started
+        report = json.loads(report_path.read_text(encoding="utf-8"))
 
         # The assistant (Falcon + Gemma) latency is recorded in the report. The
         # remaining time is the MediaPipe analysis + annotated-video encode.
-        assistant_seconds = _assistant_latency(report_path)
+        assistant_seconds = _assistant_latency_from_report(report)
         video_seconds = total_seconds - (assistant_seconds or 0.0)
+        persisted_video_seconds = round(max(0.0, video_seconds), 1)
+        persisted_assistant_seconds = (
+            round(assistant_seconds, 1) if assistant_seconds is not None else None
+        )
+        original_video_url = _file_url(job_id, input_path.name)
+        annotated_video_url = _file_url(job_id, output_path.name)
+
+        complete_evaluation(
+            session_factory,
+            job_id=job_id,
+            report_json=report,
+            original_video_url=original_video_url,
+            annotated_video_url=annotated_video_url,
+            video_seconds=persisted_video_seconds,
+            assistant_seconds=persisted_assistant_seconds,
+        )
         store.update(
             job_id,
             status="completed",
             report_url=f"/api/jobs/{job_id}/report",
-            annotated_video_url=_file_url(job_id, output_path.name),
-            video_seconds=round(max(0.0, video_seconds), 1),
-            assistant_seconds=round(assistant_seconds, 1) if assistant_seconds else None,
+            original_video_url=original_video_url,
+            annotated_video_url=annotated_video_url,
+            video_seconds=persisted_video_seconds,
+            assistant_seconds=persisted_assistant_seconds,
         )
     except Exception as exc:
-        store.update(job_id, status="failed", error=str(exc))
+        logger.exception("Job processing failed for job_id=%s", job_id)
+        should_mark_job_failed = True
+        try:
+            # False means a concurrent worker already committed completion. Do
+            # not let a later duplicate failure downgrade that successful job.
+            should_mark_job_failed = fail_evaluation(
+                session_factory,
+                job_id=job_id,
+                error=str(exc),
+            )
+        except Exception:
+            # The persistence helper already logs and rolls back. Preserve the
+            # operational failure in the existing job store as a fallback.
+            logger.exception(
+                "Could not persist failure state for job_id=%s",
+                job_id,
+            )
+        if should_mark_job_failed:
+            store.update(job_id, status="failed", error=str(exc))
 
 
 def _assistant_latency(report_path: Path) -> float | None:
@@ -280,7 +443,14 @@ def _assistant_latency(report_path: Path) -> float | None:
         report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    latency = report.get("assistant", {}).get("latency_seconds")
+    return _assistant_latency_from_report(report)
+
+
+def _assistant_latency_from_report(report: dict[str, Any]) -> float | None:
+    assistant = report.get("assistant", {})
+    if not isinstance(assistant, dict):
+        return None
+    latency = assistant.get("latency_seconds")
     return float(latency) if isinstance(latency, (int, float)) else None
 
 

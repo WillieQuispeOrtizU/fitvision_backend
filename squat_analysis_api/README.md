@@ -140,31 +140,33 @@ uv run squat-analysis-api-server
 
 The upload API listens on `http://127.0.0.1:8000` by default.
 
-Authentication and profile endpoints require an existing PostgreSQL schema and
-the following environment variables:
+Authentication, profile, job, and evaluation endpoints require the existing
+PostgreSQL schema and the following environment variables:
 
 ```env
 DATABASE_URL=postgresql+psycopg://fitvision:password@127.0.0.1:5432/fitvision
 AUTH_SESSION_TTL_HOURS=720
 ```
 
-`DATABASE_URL` is required for authentication. `AUTH_SESSION_TTL_HOURS` is
-optional and defaults to 720 hours. The application validates connectivity but
-does not call `Base.metadata.create_all()` or otherwise create production
-tables.
+`DATABASE_URL` is required for authentication, job ownership, evaluation
+history, and progress persistence. `AUTH_SESSION_TTL_HOURS` is optional and
+defaults to 720 hours. The application validates connectivity but does not call
+`Base.metadata.create_all()` or otherwise create production tables.
 
 Endpoints:
 
 - `GET /api/health`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/users/me`
-- `PATCH /api/users/me`
-- `POST /api/jobs`
-- `GET /api/jobs/{job_id}`
-- `GET /api/jobs/{job_id}/report`
-- `GET /api/jobs/{job_id}/files/{filename}`
+- `POST /api/auth/logout` (Bearer required)
+- `GET /api/users/me` (Bearer required)
+- `PATCH /api/users/me` (Bearer required)
+- `POST /api/jobs` (Bearer required)
+- `GET /api/jobs/{job_id}` (Bearer required; owner only)
+- `GET /api/jobs/{job_id}/report` (Bearer required; owner only)
+- `GET /api/evaluations` (Bearer required)
+- `GET /api/evaluations/{evaluation_id}` (Bearer required; owner only)
+- `GET /api/jobs/{job_id}/files/{filename}` (public)
 
 Bearer sessions use an opaque token returned only to the client. PostgreSQL
 stores its SHA-256 digest in `auth_session.token_hash`; passwords are stored as
@@ -190,6 +192,36 @@ curl -X POST "$API_URL/api/auth/logout" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+Upload a squat video with the token returned by register or login:
+
+```bash
+TOKEN='TOKEN_RETURNED_BY_REGISTER_OR_LOGIN'
+
+curl -X POST "$API_URL/api/jobs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'video=@input_video/example.mp4' \
+  -F 'mode=beginner'
+```
+
+List the authenticated user's evaluations, newest first, and retrieve one
+evaluation including its complete persisted report:
+
+```bash
+curl "$API_URL/api/evaluations" \
+  -H "Authorization: Bearer $TOKEN"
+
+EVALUATION_ID=1
+curl "$API_URL/api/evaluations/$EVALUATION_ID" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Job creation, status, and report access are tied to the authenticated user. A
+user receives `404` when requesting a job or evaluation owned by another user.
+The files endpoint deliberately remains public for now because Flutter video
+playback consumes the returned media URLs without attaching a Bearer header.
+Existing URL formats such as
+`/api/jobs/{job_id}/files/{filename}` remain unchanged.
+
 ## Test and deploy
 
 Install exactly the locked API dependencies and run the complete test suite:
@@ -203,6 +235,10 @@ On the server, provide `DATABASE_URL` through the existing process manager and
 restart that process after updating the checkout. The repository does not
 contain a systemd/Nginx service definition, so its external service name is not
 assumed here.
+
+Evaluation persistence reuses the existing `evaluation` and `user_progress`
+tables from `schema.sql`. It requires no schema migration, new dependency, or
+new environment variable.
 
 Each upload is stored under:
 

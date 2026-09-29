@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 TrainingLevel = Literal["beginner", "intermediate", "advanced"]
+EvaluationExercise = Literal["squat"]
+EvaluationMode = Literal["beginner", "pro"]
+EvaluationStatus = Literal["queued", "processing", "completed", "failed"]
 
 
 def _normalize_email(value: object) -> object:
@@ -82,3 +85,27 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_at: datetime
+
+
+class EvaluationSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    job_id: str
+    exercise: EvaluationExercise
+    mode: EvaluationMode
+    status: EvaluationStatus
+    correct: bool | None
+    total_reps: int | None
+    correct_reps: int | None
+    incorrect_reps: int | None
+    original_video_url: str | None
+    annotated_video_url: str | None
+    video_seconds: float | None
+    assistant_seconds: float | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class EvaluationDetailResponse(EvaluationSummaryResponse):
+    report_json: dict[str, Any]

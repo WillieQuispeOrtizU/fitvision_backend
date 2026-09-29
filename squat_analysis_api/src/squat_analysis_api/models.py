@@ -140,7 +140,10 @@ class Evaluation(Base):
     report_json: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,
         nullable=False,
-        server_default=text("'{}'::jsonb"),
+        # PostgreSQL implicitly casts this literal to the existing JSONB
+        # column. Keeping the portable literal also permits isolated SQLite
+        # integration tests; production never creates or alters the table.
+        server_default=text("'{}'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
