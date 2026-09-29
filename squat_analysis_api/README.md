@@ -13,6 +13,7 @@ It provides:
 
 - Python 3.12
 - `uv`
+- PostgreSQL 16-compatible database provisioned with `schema.sql`
 - macOS Apple Silicon for the MLX assistant path, or Windows/Linux with a Torch-compatible GPU for the Torch assistant path.
 
 ## Install
@@ -139,13 +140,69 @@ uv run squat-analysis-api-server
 
 The upload API listens on `http://127.0.0.1:8000` by default.
 
+Authentication and profile endpoints require an existing PostgreSQL schema and
+the following environment variables:
+
+```env
+DATABASE_URL=postgresql+psycopg://fitvision:password@127.0.0.1:5432/fitvision
+AUTH_SESSION_TTL_HOURS=720
+```
+
+`DATABASE_URL` is required for authentication. `AUTH_SESSION_TTL_HOURS` is
+optional and defaults to 720 hours. The application validates connectivity but
+does not call `Base.metadata.create_all()` or otherwise create production
+tables.
+
 Endpoints:
 
 - `GET /api/health`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/users/me`
+- `PATCH /api/users/me`
 - `POST /api/jobs`
 - `GET /api/jobs/{job_id}`
 - `GET /api/jobs/{job_id}/report`
 - `GET /api/jobs/{job_id}/files/{filename}`
+
+Bearer sessions use an opaque token returned only to the client. PostgreSQL
+stores its SHA-256 digest in `auth_session.token_hash`; passwords are stored as
+Argon2id hashes.
+
+Example authentication flow:
+
+```bash
+API_URL=http://127.0.0.1:8000
+
+curl -X POST "$API_URL/api/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"usuario@email.com","password":"password","full_name":"Nombre","birth_date":"2002-01-01","height_cm":173,"weight_kg":65,"training_level":"beginner"}'
+
+curl -X POST "$API_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"usuario@email.com","password":"password"}'
+
+curl "$API_URL/api/users/me" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -X POST "$API_URL/api/auth/logout" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Test and deploy
+
+Install exactly the locked API dependencies and run the complete test suite:
+
+```bash
+uv sync --frozen --extra assistant
+uv run --extra assistant python -m unittest discover -s tests -v
+```
+
+On the server, provide `DATABASE_URL` through the existing process manager and
+restart that process after updating the checkout. The repository does not
+contain a systemd/Nginx service definition, so its external service name is not
+assumed here.
 
 Each upload is stored under:
 

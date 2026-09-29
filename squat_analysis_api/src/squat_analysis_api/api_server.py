@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from squat_analysis_api.assistant_client import AssistantClient
@@ -116,6 +117,7 @@ def create_app(
     jobs_dir: Path | None = None,
     assistant_url: str | None = None,
     job_store: JobStore | None = None,
+    database_healthcheck: Callable[[], str] | None = None,
 ):
     if FastAPI is None:
         raise RuntimeError("Install assistant extras before running the API server: uv sync --extra assistant")
@@ -126,6 +128,13 @@ def create_app(
     _cleanup_jobs(jobs_root, _jobs_ttl_hours())
     store = job_store or JobStore.load(jobs_root)
 
+    from squat_analysis_api.auth_routes import router as auth_router
+    from squat_analysis_api.database import check_database_connection
+
+    configured_database_healthcheck = (
+        database_healthcheck or check_database_connection
+    )
+
     app = FastAPI(title="Squat Analysis Upload API")
     app.add_middleware(
         CORSMiddleware,
@@ -134,11 +143,13 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(auth_router)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {
             "status": "ok",
+            "database": {"status": configured_database_healthcheck()},
             "assistant_url": configured_assistant_url,
             "jobs_dir": str(jobs_root),
         }
