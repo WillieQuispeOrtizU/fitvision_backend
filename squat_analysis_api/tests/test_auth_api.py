@@ -24,14 +24,7 @@ class AuthApiTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-        Base.metadata.create_all(
-            self.engine,
-            tables=[
-                AppUser.__table__,
-                AuthSession.__table__,
-                UserProgress.__table__,
-            ],
-        )
+        Base.metadata.create_all(self.engine)
         self.session_factory = sessionmaker(
             bind=self.engine,
             expire_on_commit=False,

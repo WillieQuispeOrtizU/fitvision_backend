@@ -287,7 +287,7 @@ class Achievement(Base):
     criteria_json: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,
         nullable=False,
-        server_default=text("'{}'::jsonb"),
+        server_default=text("'{}'"),
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
@@ -346,7 +346,7 @@ class Challenge(Base):
     criteria_json: Mapped[dict[str, Any]] = mapped_column(
         JSON_DOCUMENT,
         nullable=False,
-        server_default=text("'{}'::jsonb"),
+        server_default=text("'{}'"),
     )
     start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

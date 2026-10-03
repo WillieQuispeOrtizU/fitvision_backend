@@ -215,6 +215,59 @@ curl "$API_URL/api/evaluations/$EVALUATION_ID" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+Each evaluation response also includes `xp_earned`, calculated as the sum of
+`xp_transaction.amount` rows linked to that evaluation. It includes the base
+completion reward and any challenge rewards triggered by that completion.
+
+Retrieve the authenticated user's complete PostgreSQL-backed gamification
+state:
+
+```bash
+curl "$API_URL/api/gamification" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The response contains `progress`, `achievements`, and `challenges`. XP, level,
+streaks, counters, unlock timestamps, challenge status, and challenge rewards
+are authoritative backend values. Calendar streaks use `America/Lima` days.
+
+## Gamification catalogs and historical backfill
+
+The canonical achievement/challenge catalog is upserted by stable `code`; an
+existing row keeps its database ID and user progress is never deleted by the
+seed. Seed it explicitly during deployment:
+
+```bash
+uv run --extra assistant fitvision-gamification seed
+```
+
+Existing completed evaluations can be replayed without changing their report,
+classification, media URLs, or timestamps. Selection is mandatory so the
+operation can never target the production database accidentally without an
+explicit scope:
+
+Before a non-dry-run backfill, stop the API process and every analysis worker
+after allowing in-flight jobs to finish. Take a PostgreSQL backup, then run the
+seed/backfill while those processes remain stopped. This prevents a worker
+from completing a new evaluation between the historical snapshot and replay.
+
+```bash
+# Inspect one user without persisting changes.
+uv run --extra assistant fitvision-gamification backfill --user-id 123 --dry-run
+
+# Rebuild one user.
+uv run --extra assistant fitvision-gamification backfill --user-id 123
+
+# One-time deployment backfill for every user.
+uv run --extra assistant fitvision-gamification backfill --all
+```
+
+The backfill uses one transaction per user. It deletes and reconstructs only
+derived gamification rows (`xp_transaction`, `user_achievement`,
+`user_challenge`, and aggregate `user_progress` values) from completed
+evaluations in chronological order. It is safe to rerun and does not execute
+automatically when the API starts.
+
 Job creation, status, and report access are tied to the authenticated user. A
 user receives `404` when requesting a job or evaluation owned by another user.
 The files endpoint deliberately remains public for now because Flutter video
@@ -237,8 +290,8 @@ contain a systemd/Nginx service definition, so its external service name is not
 assumed here.
 
 Evaluation persistence reuses the existing `evaluation` and `user_progress`
-tables from `schema.sql`. It requires no schema migration, new dependency, or
-new environment variable.
+tables plus the existing gamification tables from `schema.sql`. It requires no
+schema migration, new dependency, or new environment variable.
 
 Each upload is stored under:
 

@@ -34,6 +34,7 @@ squat-analysis = "squat_analysis_api.cli:main"
 squat-analysis-api-server = "squat_analysis_api.api_server:main"
 squat-assistant-server = "squat_analysis_api.assistant_server:main"
 squat-assistant-download = "squat_analysis_api.assistant_models:main"
+fitvision-gamification = "squat_analysis_api.gamification_cli:main"
 
 [build-system]
 requires = ["hatchling"]

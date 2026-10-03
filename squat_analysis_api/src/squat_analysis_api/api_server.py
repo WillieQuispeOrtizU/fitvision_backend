@@ -169,6 +169,7 @@ def create_app(
         get_session_factory,
     )
     from squat_analysis_api.evaluation_routes import router as evaluation_router
+    from squat_analysis_api.gamification_routes import router as gamification_router
     from squat_analysis_api.evaluation_service import (
         create_queued_evaluation,
         fail_interrupted_evaluations,
@@ -209,6 +210,7 @@ def create_app(
     )
     app.include_router(auth_router)
     app.include_router(evaluation_router)
+    app.include_router(gamification_router)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

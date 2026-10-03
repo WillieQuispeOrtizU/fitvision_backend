@@ -18,6 +18,7 @@ from squat_analysis_api.auth import (
     verify_password,
 )
 from squat_analysis_api.database import get_db
+from squat_analysis_api.gamification_service import initialize_user_gamification
 from squat_analysis_api.models import AppUser, UserProgress
 from squat_analysis_api.schemas import (
     AuthResponse,
@@ -54,17 +55,22 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
     try:
         db.add(user)
         db.flush()
-        db.add(
-            UserProgress(
-                user_id=user.id,
-                total_xp=0,
-                level=1,
-                current_streak=0,
-                longest_streak=0,
-                total_evaluations=0,
-                total_correct_reps=0,
-                total_incorrect_reps=0,
-            )
+        progress = UserProgress(
+            user_id=user.id,
+            total_xp=0,
+            level=1,
+            current_streak=0,
+            longest_streak=0,
+            total_evaluations=0,
+            total_correct_reps=0,
+            total_incorrect_reps=0,
+        )
+        db.add(progress)
+        db.flush()
+        initialize_user_gamification(
+            db,
+            user_id=user.id,
+            started_at=utc_now(),
         )
         issued = issue_session(user.id)
         db.add(issued.record)

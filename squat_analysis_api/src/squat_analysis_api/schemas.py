@@ -10,6 +10,7 @@ TrainingLevel = Literal["beginner", "intermediate", "advanced"]
 EvaluationExercise = Literal["squat"]
 EvaluationMode = Literal["beginner", "pro"]
 EvaluationStatus = Literal["queued", "processing", "completed", "failed"]
+ChallengeStatus = Literal["active", "completed", "claimed", "expired"]
 
 
 def _normalize_email(value: object) -> object:
@@ -103,9 +104,55 @@ class EvaluationSummaryResponse(BaseModel):
     annotated_video_url: str | None
     video_seconds: float | None
     assistant_seconds: float | None
+    xp_earned: int
     created_at: datetime
     completed_at: datetime | None
 
 
 class EvaluationDetailResponse(EvaluationSummaryResponse):
     report_json: dict[str, Any]
+
+
+class GamificationProgressResponse(BaseModel):
+    total_xp: int
+    level: int
+    current_streak: int
+    longest_streak: int
+    total_evaluations: int
+    correct_evaluations: int
+    needs_improvement_evaluations: int
+    total_repetitions: int
+    correct_repetitions: int
+    incorrect_repetitions: int
+    xp_at_level_start: int
+    xp_for_next_level: int
+    xp_within_level: int
+    xp_required_within_level: int
+
+
+class GamificationAchievementResponse(BaseModel):
+    code: str
+    name: str
+    description: str
+    target: int
+    current: int
+    xp_reward: int
+    unlocked: bool
+    unlocked_at: datetime | None
+
+
+class GamificationChallengeResponse(BaseModel):
+    code: str
+    title: str
+    description: str
+    target: int
+    current: int
+    xp_reward: int
+    status: ChallengeStatus
+    completed_at: datetime | None
+
+
+class GamificationResponse(BaseModel):
+    progress: GamificationProgressResponse
+    achievements: list[GamificationAchievementResponse]
+    challenges: list[GamificationChallengeResponse]

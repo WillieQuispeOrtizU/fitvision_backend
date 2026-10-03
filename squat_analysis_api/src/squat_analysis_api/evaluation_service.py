@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from squat_analysis_api.gamification_service import apply_completed_evaluation
 from squat_analysis_api.models import Evaluation, UserProgress
 
 
@@ -93,11 +94,12 @@ def complete_evaluation(
     video_seconds: float,
     assistant_seconds: float | None,
 ) -> bool:
-    """Persist an authoritative report and increment progress exactly once.
+    """Persist a report and all derived progress/gamification exactly once.
 
     The evaluation row is locked before checking its terminal state. Evaluation
-    completion and the three progress counters are committed together, so a
-    duplicate worker cannot account for the same evaluation twice.
+    completion, counters, XP, level, streak, achievements, and challenges are
+    committed together, so a duplicate worker cannot account for the same
+    evaluation twice.
     """
 
     def transition(db: Session) -> bool:
@@ -133,10 +135,12 @@ def complete_evaluation(
         evaluation.completed_at = now
         evaluation.updated_at = now
 
-        progress.total_evaluations += 1
-        progress.total_correct_reps += correct_reps
-        progress.total_incorrect_reps += incorrect_reps
-        progress.updated_at = now
+        apply_completed_evaluation(
+            db,
+            evaluation=evaluation,
+            progress=progress,
+            occurred_at=now,
+        )
         return True
 
     return _run_background_transaction(

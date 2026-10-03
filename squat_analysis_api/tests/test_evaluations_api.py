@@ -37,15 +37,7 @@ class EvaluationsApiTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-        Base.metadata.create_all(
-            self.engine,
-            tables=[
-                AppUser.__table__,
-                AuthSession.__table__,
-                UserProgress.__table__,
-                Evaluation.__table__,
-            ],
-        )
+        Base.metadata.create_all(self.engine)
         self.session_factory = sessionmaker(
             bind=self.engine,
             expire_on_commit=False,
@@ -331,6 +323,7 @@ class EvaluationsApiTest(unittest.TestCase):
                 "annotated_video_url",
                 "video_seconds",
                 "assistant_seconds",
+                "xp_earned",
                 "created_at",
                 "completed_at",
             },
@@ -411,10 +404,10 @@ class EvaluationsApiTest(unittest.TestCase):
             self.assertEqual(progress.total_evaluations, 1)
             self.assertEqual(progress.total_correct_reps, 3)
             self.assertEqual(progress.total_incorrect_reps, 0)
-            self.assertEqual(progress.total_xp, 0)
+            self.assertEqual(progress.total_xp, 100)
             self.assertEqual(progress.level, 1)
-            self.assertEqual(progress.current_streak, 0)
-            self.assertEqual(progress.longest_streak, 0)
+            self.assertEqual(progress.current_streak, 1)
+            self.assertEqual(progress.longest_streak, 1)
 
     def _register(self, email: str) -> str:
         response = self.client.post(
