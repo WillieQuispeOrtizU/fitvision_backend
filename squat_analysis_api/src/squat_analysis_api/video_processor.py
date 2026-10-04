@@ -350,7 +350,6 @@ def _normalize_video_orientation(
         "error",
         "-nostdin",
         "-y",
-        "-autorotate",
         "-i",
         str(input_path),
         "-map",

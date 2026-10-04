@@ -277,7 +277,9 @@ class NormalizedVideoContextTest(unittest.TestCase):
             self.assertFalse(run.call_args.kwargs["shell"])
             self.assertIn("encode failed", "\n".join(logs.output))
 
-    def test_successful_normalization_uses_autorotate_and_clears_metadata(self):
+    def test_successful_normalization_uses_default_autorotation_and_clears_metadata(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "original.mp4"
             output_path = Path(tmp) / "normalized.mp4"
@@ -302,7 +304,8 @@ class NormalizedVideoContextTest(unittest.TestCase):
             self.assertTrue(succeeded)
             self.assertEqual(output_path.read_bytes(), b"normalized")
             command = run.call_args.args[0]
-            self.assertLess(command.index("-autorotate"), command.index("-i"))
+            self.assertNotIn("-autorotate", command)
+            self.assertNotIn("-noautorotate", command)
             self.assertEqual(command[command.index("-map_metadata") + 1], "-1")
             self.assertEqual(
                 command[command.index("-metadata:s:v:0") + 1], "rotate=0"
