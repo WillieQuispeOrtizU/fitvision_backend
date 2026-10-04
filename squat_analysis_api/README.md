@@ -13,6 +13,7 @@ It provides:
 
 - Python 3.12
 - `uv`
+- FFmpeg installed with both `ffmpeg` and `ffprobe` available on `PATH`
 - PostgreSQL 16-compatible database provisioned with `schema.sql`
 - macOS Apple Silicon for the MLX assistant path, or Windows/Linux with a Torch-compatible GPU for the Torch assistant path.
 
@@ -39,6 +40,11 @@ uv run squat-analysis
 ```
 
 Annotated videos are written to `output_video/` as `<name>_analyzed.mp4`.
+
+Before OpenCV and MediaPipe analyze a video, the backend uses `ffprobe` and
+`ffmpeg` to physically normalize mobile rotation metadata when necessary. The
+original upload is preserved. If either tool is unavailable or normalization
+fails, processing falls back to the original file and logs a warning.
 
 Useful options:
 
