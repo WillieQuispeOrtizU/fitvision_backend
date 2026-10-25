@@ -225,7 +225,7 @@ def create_app(
     def create_job(
         background_tasks: BackgroundTasks,
         video: UploadFile = File(...),
-        mode: str = Form("beginner"),
+        mode: str = Form(...),
         current_user=Depends(get_current_user),
         db=Depends(get_db),
     ) -> dict[str, Any]:
@@ -235,6 +235,7 @@ def create_app(
         suffix = Path(video.filename or "").suffix.lower()
         if suffix not in ALLOWED_VIDEO_EXTENSIONS:
             raise HTTPException(status_code=400, detail="video must be .mp4, .mov, or .avi")
+        _validate_video_upload(video, suffix)
 
         job_id = uuid.uuid4().hex
         job_dir = jobs_root / job_id
@@ -505,6 +506,46 @@ def _resolve_report_path(jobs_root: Path, job_id: str) -> Path:
 def _safe_filename(filename: str) -> str:
     name = Path(filename).name.replace(" ", "_")
     return name or "upload.mp4"
+
+
+def _validate_video_upload(video: UploadFile, suffix: str) -> None:
+    """Reject empty files and obvious extension/container mismatches.
+
+    This intentionally validates only stable container signatures. Full codec
+    decoding still belongs to OpenCV/FFmpeg in the background worker.
+    """
+
+    try:
+        header = video.file.read(32)
+        video.file.seek(0)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="video could not be read") from exc
+
+    if not header:
+        raise HTTPException(status_code=400, detail="video must not be empty")
+
+    if suffix in {".mp4", ".mov"}:
+        # ISO BMFF/QuickTime commonly starts with ftyp, but valid camera files
+        # may start with another top-level atom before metadata is rearranged.
+        valid_container = len(header) >= 8 and header[4:8] in {
+            b"ftyp",
+            b"moov",
+            b"mdat",
+            b"free",
+            b"wide",
+        }
+    else:
+        valid_container = (
+            len(header) >= 12
+            and header[:4] == b"RIFF"
+            and header[8:12] == b"AVI "
+        )
+
+    if not valid_container:
+        raise HTTPException(
+            status_code=400,
+            detail="video content does not match its .mp4, .mov, or .avi container",
+        )
 
 
 def _file_url(job_id: str, filename: str) -> str:

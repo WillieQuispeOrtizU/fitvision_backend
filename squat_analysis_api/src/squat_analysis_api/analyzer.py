@@ -281,6 +281,12 @@ class SquatFrameAnalyzer:
 
         self.state_tracker["COUNT_FRAMES"][self.state_tracker["DISPLAY_TEXT"]] += 1
         self._show_feedback(frame)
+        if completed_correct is not None:
+            # Keep the detected feedback visible on the final frame of this rep,
+            # then clear it before the next rep starts. Otherwise the timed
+            # overlay can leak into a later repetition that did not have the
+            # same issue.
+            self._clear_transient_feedback()
 
         if display_inactivity:
             self.state_tracker["start_inactive_time"] = self._now
@@ -327,6 +333,7 @@ class SquatFrameAnalyzer:
             issues.append(self.feedback_issue_map[0])
         elif hip_angle < self.thresholds["HIP_THRESH"][0] and self.state_tracker["state_seq"].count("s2") == 1:
             self.state_tracker["DISPLAY_TEXT"][1] = True
+            self.state_tracker["INCORRECT_POSTURE"] = True
             issues.append(self.feedback_issue_map[1])
 
         if self.thresholds["KNEE_THRESH"][0] < knee_angle < self.thresholds["KNEE_THRESH"][1] and self.state_tracker["state_seq"].count("s2") == 1:
@@ -343,6 +350,10 @@ class SquatFrameAnalyzer:
             issues.append(self.feedback_issue_map[2])
 
         return issues
+
+    def _clear_transient_feedback(self) -> None:
+        self.state_tracker["DISPLAY_TEXT"].fill(False)
+        self.state_tracker["COUNT_FRAMES"].fill(0)
 
     def _track_rep_frame(
         self,

@@ -28,6 +28,9 @@ from squat_analysis_api.models import (
 )
 
 
+VALID_MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00"
+
+
 class EvaluationsApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -71,7 +74,7 @@ class EvaluationsApiTest(unittest.TestCase):
     def test_job_without_token_is_unauthorized(self):
         response = self.client.post(
             "/api/jobs",
-            files={"video": ("squat.mp4", b"fake video", "video/mp4")},
+            files={"video": ("squat.mp4", VALID_MP4_BYTES, "video/mp4")},
             data={"mode": "beginner"},
         )
 
@@ -432,7 +435,7 @@ class EvaluationsApiTest(unittest.TestCase):
         return self.client.post(
             "/api/jobs",
             headers=self._auth(token),
-            files={"video": (filename, b"fake video", "video/mp4")},
+            files={"video": (filename, VALID_MP4_BYTES, "video/mp4")},
             data={"mode": mode},
         )
 

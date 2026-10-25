@@ -11,10 +11,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 
-from squat_analysis_api.assistant_client import AssistantClient, apply_assistant_response
+from squat_analysis_api.assistant_client import (
+    AssistantClient,
+    AssistantClientError,
+    apply_assistant_response,
+)
 from squat_analysis_api.analyzer import SquatFrameAnalyzer, SquatStats
 from squat_analysis_api.reporting import VideoMetadata, build_report, empty_assistant_status, write_report
 from squat_analysis_api.thresholds import get_thresholds
@@ -141,12 +146,10 @@ def process_video(
         )
         if assistant_url:
             client = assistant_client or AssistantClient(assistant_url)
-            response, latency = client.analyze(report)
-            report = apply_assistant_response(
+            report = _apply_assistant_feedback(
                 report,
-                response,
+                client=client,
                 service_url=assistant_url,
-                latency_seconds=latency,
             )
         write_report(result_report_path, report)
 
@@ -156,6 +159,48 @@ def process_video(
         frames=frame_count,
         stats=analyzer.stats,
         report_path=result_report_path,
+    )
+
+
+def _apply_assistant_feedback(
+    report: dict[str, Any],
+    *,
+    client: AssistantClient,
+    service_url: str,
+) -> dict[str, Any]:
+    try:
+        response, latency = client.analyze(report)
+    except AssistantClientError as exc:
+        # The rule-based MediaPipe/OpenCV result is authoritative and remains
+        # useful even when the optional Falcon/Gemma service is unavailable.
+        # Reuse the deterministic Spanish feedback rather than failing the job.
+        from squat_analysis_api.assistant_server import _heuristic_feedback
+
+        logger.warning(
+            "Assistant feedback unavailable for %s; using deterministic "
+            "heuristic feedback: %s",
+            report.get("video", {}).get("input_path", "video"),
+            exc,
+        )
+        fallback = _heuristic_feedback(report)
+        updated = apply_assistant_response(
+            report,
+            fallback,
+            service_url=service_url,
+            latency_seconds=0.0,
+        )
+        updated["assistant"].update(
+            status="fallback",
+            latency_seconds=None,
+            errors=[str(exc)],
+        )
+        return updated
+
+    return apply_assistant_response(
+        report,
+        response,
+        service_url=service_url,
+        latency_seconds=latency,
     )
 
 

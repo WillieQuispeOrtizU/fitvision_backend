@@ -5,15 +5,21 @@ import os
 import tempfile
 import time
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from squat_analysis_api.api_server import JobStore, create_app
+from squat_analysis_api.api_server import (
+    JobStore,
+    _validate_video_upload,
+    create_app,
+)
 from squat_analysis_api.database import get_db
 from squat_analysis_api.models import (
     AppUser,
@@ -22,6 +28,11 @@ from squat_analysis_api.models import (
     Evaluation,
     UserProgress,
 )
+
+
+VALID_MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00"
+VALID_MOV_BYTES = b"\x00\x00\x00\x18ftypqt  \x00\x00\x00\x00"
+VALID_AVI_BYTES = b"RIFF\x10\x00\x00\x00AVI LIST"
 
 
 class ApiServerTest(unittest.TestCase):
@@ -119,7 +130,7 @@ class ApiServerTest(unittest.TestCase):
                 response = client.post(
                     "/api/jobs",
                     headers=self._auth(token),
-                    files={"video": ("squat.mp4", b"fake video", "video/mp4")},
+                    files={"video": ("squat.mp4", VALID_MP4_BYTES, "video/mp4")},
                     data={"mode": "beginner"},
                 )
 
@@ -205,7 +216,7 @@ class ApiServerTest(unittest.TestCase):
                 response = client.post(
                     "/api/jobs",
                     headers=self._auth(token),
-                    files={"video": ("squat.mp4", b"fake video", "video/mp4")},
+                    files={"video": ("squat.mp4", VALID_MP4_BYTES, "video/mp4")},
                     data={"mode": "beginner"},
                 )
 
@@ -320,11 +331,83 @@ class ApiServerTest(unittest.TestCase):
             response = client.post(
                 "/api/jobs",
                 headers=self._auth(token),
-                files={"video": ("squat.mp4", b"fake video", "video/mp4")},
+                files={"video": ("squat.mp4", VALID_MP4_BYTES, "video/mp4")},
                 data={"mode": "advanced"},
             )
 
             self.assertEqual(response.status_code, 400)
+
+    def test_upload_requires_explicit_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self._client(jobs_dir=Path(tmp))
+            token = self._register(client).json()["access_token"]
+
+            response = client.post(
+                "/api/jobs",
+                headers=self._auth(token),
+                files={"video": ("squat.mp4", VALID_MP4_BYTES, "video/mp4")},
+            )
+
+            self.assertEqual(response.status_code, 422)
+            with self.session_factory() as db:
+                self.assertIsNone(db.scalar(select(Evaluation)))
+
+    def test_incompatible_video_extension_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self._client(jobs_dir=Path(tmp))
+            token = self._register(client).json()["access_token"]
+
+            response = client.post(
+                "/api/jobs",
+                headers=self._auth(token),
+                files={"video": ("squat.mkv", VALID_MP4_BYTES, "video/x-matroska")},
+                data={"mode": "beginner"},
+            )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertIn(".mp4", response.json()["detail"])
+
+    def test_empty_and_mismatched_video_content_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = self._client(jobs_dir=Path(tmp))
+            token = self._register(client).json()["access_token"]
+
+            empty = client.post(
+                "/api/jobs",
+                headers=self._auth(token),
+                files={"video": ("squat.mp4", b"", "video/mp4")},
+                data={"mode": "beginner"},
+            )
+            mismatched = client.post(
+                "/api/jobs",
+                headers=self._auth(token),
+                files={"video": ("squat.mp4", b"not an mp4", "video/mp4")},
+                data={"mode": "beginner"},
+            )
+
+            self.assertEqual(empty.status_code, 400)
+            self.assertIn("empty", empty.json()["detail"])
+            self.assertEqual(mismatched.status_code, 400)
+            self.assertIn("container", mismatched.json()["detail"])
+
+    def test_supported_container_signatures_are_accepted(self):
+        samples = (
+            ("clip.mp4", VALID_MP4_BYTES),
+            ("clip.mov", VALID_MOV_BYTES),
+            ("clip.avi", VALID_AVI_BYTES),
+        )
+        for filename, content in samples:
+            with self.subTest(filename=filename):
+                upload = UploadFile(filename=filename, file=BytesIO(content))
+                _validate_video_upload(upload, Path(filename).suffix)
+
+    def test_container_signature_must_match_extension(self):
+        upload = UploadFile(filename="clip.avi", file=BytesIO(VALID_MP4_BYTES))
+
+        with self.assertRaises(HTTPException) as raised:
+            _validate_video_upload(upload, ".avi")
+
+        self.assertIn("container", raised.exception.detail)
 
 
 if __name__ == "__main__":

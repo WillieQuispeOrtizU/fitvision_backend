@@ -17,6 +17,10 @@ DEFAULT_MLX_GEMMA_MODEL = "mlx-community/gemma-4-e4b-it-8bit"
 DEFAULT_DETECTION_QUERIES = ("person", "barbell", "dumbbell")
 DEFAULT_DETECT_FRAME_LIMIT = 4
 DEFAULT_VLM_IMAGE_LIMIT = 1
+GENERAL_TECHNIQUE_CUE = (
+    "Revisa tu postura y repite el movimiento de forma controlada manteniendo "
+    "una alineación estable durante toda la ejecución."
+)
 
 
 def _is_macos_arm64() -> bool:
@@ -508,6 +512,10 @@ def _heuristic_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     for rep in payload.get("reps", []):
         issues = rep.get("issue_tags", [])
         cues = [issue_cues[issue] for issue in issues if issue in issue_cues]
+        if any(issue not in issue_cues for issue in issues):
+            cues.append(GENERAL_TECHNIQUE_CUE)
+        if not cues and not rep.get("correct"):
+            cues.append(GENERAL_TECHNIQUE_CUE)
         if rep.get("correct"):
             summary = "La repetición fue clasificada como correcta según las métricas de MediaPipe."
             severity = "info"

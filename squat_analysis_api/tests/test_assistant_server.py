@@ -7,6 +7,7 @@ from pathlib import Path
 
 from squat_analysis_api.assistant_server import (
     EmptyFalconAdapter,
+    GENERAL_TECHNIQUE_CUE,
     HeuristicFeedbackAdapter,
     _build_gemma_prompt,
     _feedback_from_model_text,
@@ -178,6 +179,38 @@ class SpanishFeedbackTest(unittest.TestCase):
 
         self.assertEqual(result, _heuristic_feedback(payload))
         self.assertNotIn("This is not valid JSON.", json.dumps(result, ensure_ascii=False))
+
+    def test_unknown_issue_uses_general_recommendation(self):
+        result = _heuristic_feedback(
+            {
+                "stats": {"total_reps": 1, "correct": 0, "incorrect": 1},
+                "reps": [
+                    {
+                        "rep_id": 1,
+                        "correct": False,
+                        "issue_tags": ["future_issue"],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            result["rep_feedback"][0]["cues"],
+            [GENERAL_TECHNIQUE_CUE],
+        )
+
+    def test_incorrect_rep_without_issue_uses_general_recommendation(self):
+        result = _heuristic_feedback(
+            {
+                "stats": {"total_reps": 1, "correct": 0, "incorrect": 1},
+                "reps": [{"rep_id": 1, "correct": False, "issue_tags": []}],
+            }
+        )
+
+        self.assertEqual(
+            result["rep_feedback"][0]["cues"],
+            [GENERAL_TECHNIQUE_CUE],
+        )
 
 
 class GemmaPromptTest(unittest.TestCase):
