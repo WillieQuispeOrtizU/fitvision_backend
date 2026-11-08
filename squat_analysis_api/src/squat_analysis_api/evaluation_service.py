@@ -122,7 +122,7 @@ def complete_evaluation(
 
         now = _utc_now()
         evaluation.status = "completed"
-        evaluation.correct = incorrect_reps == 0
+        evaluation.correct = None if total_reps == 0 else incorrect_reps == 0
         evaluation.total_reps = total_reps
         evaluation.correct_reps = correct_reps
         evaluation.incorrect_reps = incorrect_reps

@@ -77,8 +77,8 @@ def apply_completed_evaluation(
     )
     _update_streak(progress, previous=previous, occurred_at=occurred_at)
 
-    current_is_correct = evaluation.correct is True
     current_is_eligible = int(evaluation.total_reps or 0) > 0
+    current_is_correct = current_is_eligible and evaluation.correct is True
     correct_evaluations = history["correct_evaluations"] + int(
         current_is_correct
     )
@@ -173,10 +173,34 @@ def get_gamification_state(db: Session, *, user_id: int) -> dict[str, Any]:
         select(
             func.count(Evaluation.id),
             func.coalesce(
-                func.sum(case((Evaluation.correct.is_(True), 1), else_=0)), 0
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Evaluation.total_reps > 0,
+                                Evaluation.correct.is_(True),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
             ),
             func.coalesce(
-                func.sum(case((Evaluation.correct.is_(False), 1), else_=0)), 0
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Evaluation.total_reps > 0,
+                                Evaluation.correct.is_(False),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
             ),
             func.coalesce(func.sum(Evaluation.correct_reps), 0),
             func.coalesce(func.sum(Evaluation.incorrect_reps), 0),
@@ -373,7 +397,19 @@ def _history_before(
         select(
             func.count(Evaluation.id),
             func.coalesce(
-                func.sum(case((Evaluation.correct.is_(True), 1), else_=0)), 0
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Evaluation.total_reps > 0,
+                                Evaluation.correct.is_(True),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
             ),
             func.coalesce(func.sum(Evaluation.correct_reps), 0),
             func.coalesce(func.sum(Evaluation.incorrect_reps), 0),

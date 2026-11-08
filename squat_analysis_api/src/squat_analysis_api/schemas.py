@@ -26,6 +26,12 @@ def _normalize_optional_name(value: object) -> object:
     return normalized or None
 
 
+def _validate_birth_date(value: date | None) -> date | None:
+    if value is not None and value > date.today():
+        raise ValueError("birth_date must not be in the future")
+    return value
+
+
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,6 +46,9 @@ class RegisterRequest(BaseModel):
     _normalize_email = field_validator("email", mode="before")(_normalize_email)
     _normalize_name = field_validator("full_name", mode="before")(
         _normalize_optional_name
+    )
+    _birth_date_not_in_future = field_validator("birth_date")(
+        _validate_birth_date
     )
 
 
@@ -63,6 +72,9 @@ class UserUpdateRequest(BaseModel):
 
     _normalize_name = field_validator("full_name", mode="before")(
         _normalize_optional_name
+    )
+    _birth_date_not_in_future = field_validator("birth_date")(
+        _validate_birth_date
     )
 
 

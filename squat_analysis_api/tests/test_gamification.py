@@ -97,6 +97,11 @@ class GamificationServiceTest(unittest.TestCase):
             self._xp_rows(evaluation_id),
             [(100, "evaluation_completed_correct")],
         )
+        with self.session_factory() as db:
+            self.assertIs(db.get(Evaluation, evaluation_id).correct, True)
+        progress = self._state(user_id)["progress"]
+        self.assertEqual(progress["correct_evaluations"], 1)
+        self.assertEqual(progress["needs_improvement_evaluations"], 0)
 
     def test_needs_improvement_evaluation_awards_70_xp(self):
         user_id = self._create_user("needs@example.com")
@@ -112,8 +117,13 @@ class GamificationServiceTest(unittest.TestCase):
             self._xp_rows(evaluation_id),
             [(70, "evaluation_completed_needs_improvement")],
         )
+        with self.session_factory() as db:
+            self.assertIs(db.get(Evaluation, evaluation_id).correct, False)
+        progress = self._state(user_id)["progress"]
+        self.assertEqual(progress["correct_evaluations"], 0)
+        self.assertEqual(progress["needs_improvement_evaluations"], 1)
 
-    def test_zero_repetitions_keeps_classification_but_awards_no_xp(self):
+    def test_zero_repetitions_is_unclassified_without_xp_or_challenges(self):
         user_id = self._create_user("zero@example.com")
         evaluation_id = self._complete(
             user_id,
@@ -125,19 +135,82 @@ class GamificationServiceTest(unittest.TestCase):
 
         with self.session_factory() as db:
             evaluation = db.get(Evaluation, evaluation_id)
-            self.assertIs(evaluation.correct, True)
+            self.assertIsNone(evaluation.correct)
+            self.assertEqual(evaluation.total_reps, 0)
             self.assertEqual(db.scalar(select(func.count(XpTransaction.id))), 0)
-            try_pro = db.scalar(
-                select(UserChallenge)
-                .join(Challenge)
-                .where(
-                    UserChallenge.user_id == user_id,
-                    Challenge.code == "try_pro",
-                )
+            challenge_states = list(
+                db.execute(
+                    select(
+                        Challenge.code,
+                        UserChallenge.progress_value,
+                        UserChallenge.status,
+                    )
+                    .join(Challenge)
+                    .where(
+                        UserChallenge.user_id == user_id,
+                    )
+                    .order_by(Challenge.code)
+                ).all()
             )
-            self.assertEqual(try_pro.progress_value, 0)
-            self.assertEqual(try_pro.status, "active")
-        self.assertEqual(self._state(user_id)["progress"]["total_xp"], 0)
+            self.assertTrue(challenge_states)
+            self.assertTrue(
+                all(progress == 0 for _, progress, _ in challenge_states)
+            )
+            self.assertTrue(
+                all(status == "active" for _, _, status in challenge_states)
+            )
+
+        state = self._state(user_id)
+        progress = state["progress"]
+        self.assertEqual(progress["total_xp"], 0)
+        self.assertEqual(progress["total_evaluations"], 1)
+        self.assertEqual(progress["correct_evaluations"], 0)
+        self.assertEqual(progress["needs_improvement_evaluations"], 0)
+        self.assertEqual(progress["total_repetitions"], 0)
+        correctness_achievements = {
+            item["code"]: item
+            for item in state["achievements"]
+            if item["code"] in {"first_correct", "perfectionist"}
+        }
+        self.assertEqual(
+            set(correctness_achievements), {"first_correct", "perfectionist"}
+        )
+        self.assertTrue(
+            all(not item["unlocked"] for item in correctness_achievements.values())
+        )
+        self.assertTrue(
+            all(item["current"] == 0 for item in correctness_achievements.values())
+        )
+
+    def test_statistics_distinguish_unclassified_correct_and_incorrect(self):
+        user_id = self._create_user("three-states@example.com")
+        self._complete(
+            user_id,
+            when=self._day(1),
+            correct=0,
+            incorrect=0,
+        )
+        self._complete(
+            user_id,
+            when=self._day(2),
+            correct=1,
+            incorrect=0,
+        )
+        self._complete(
+            user_id,
+            when=self._day(3),
+            correct=0,
+            incorrect=1,
+        )
+
+        progress = self._state(user_id)["progress"]
+        self.assertEqual(progress["total_evaluations"], 3)
+        self.assertEqual(progress["correct_evaluations"], 1)
+        self.assertEqual(progress["needs_improvement_evaluations"], 1)
+        self.assertEqual(progress["total_repetitions"], 2)
+        self.assertEqual(progress["correct_repetitions"], 1)
+        self.assertEqual(progress["incorrect_repetitions"], 1)
+        self.assertEqual(progress["total_xp"], 170)
 
     def test_duplicate_completion_does_not_duplicate_any_reward(self):
         user_id = self._create_user("duplicate@example.com")
@@ -471,6 +544,38 @@ class GamificationServiceTest(unittest.TestCase):
             )
         self.assertEqual(transaction_sum, first["progress"]["total_xp"])
 
+    def test_backfill_excludes_legacy_zero_rep_success_from_correct_metrics(self):
+        user_id = self._create_user("legacy-zero@example.com")
+        self._historical_evaluation(
+            user_id,
+            when=self._day(1),
+            correct=True,
+            correct_reps=0,
+            incorrect_reps=0,
+        )
+
+        before = self._state(user_id)["progress"]
+        self.assertEqual(before["total_evaluations"], 1)
+        self.assertEqual(before["correct_evaluations"], 0)
+        self.assertEqual(before["needs_improvement_evaluations"], 0)
+
+        rebuilt = self._run_backfill(user_id)
+
+        self.assertEqual(rebuilt["progress"]["total_xp"], 0)
+        self.assertEqual(rebuilt["progress"]["correct_evaluations"], 0)
+        self.assertNotIn("first_correct", self._unlocked_codes(user_id))
+        self.assertNotIn("perfectionist", self._unlocked_codes(user_id))
+        with self.session_factory() as db:
+            self.assertEqual(db.scalar(select(func.count(XpTransaction.id))), 0)
+            challenge_states = db.execute(
+                select(UserChallenge.progress_value, UserChallenge.status).where(
+                    UserChallenge.user_id == user_id
+                )
+            ).all()
+        self.assertTrue(challenge_states)
+        self.assertTrue(all(progress == 0 for progress, _ in challenge_states))
+        self.assertTrue(all(status == "active" for _, status in challenge_states))
+
     def _create_user(self, email: str) -> int:
         now = self._day(0)
         with self.session_factory() as db:
@@ -732,6 +837,36 @@ class GamificationApiTest(unittest.TestCase):
         self.assertEqual(history.json()[0]["xp_earned"], 180)
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.json()["xp_earned"], 180)
+
+    def test_zero_rep_evaluation_remains_available_as_unclassified_history(self):
+        token, user_id = self._register("zero-history@example.com")
+        helper = GamificationServiceTest(methodName="runTest")
+        helper.session_factory = self.session_factory
+        helper._sequence = 300
+        evaluation_id = helper._complete(
+            user_id,
+            when=datetime(2026, 1, 2, 12, tzinfo=timezone.utc),
+            correct=0,
+            incorrect=0,
+        )
+
+        history = self.client.get("/api/evaluations", headers=self._auth(token))
+        detail = self.client.get(
+            f"/api/evaluations/{evaluation_id}", headers=self._auth(token)
+        )
+
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(len(history.json()), 1)
+        summary = history.json()[0]
+        self.assertEqual(summary["status"], "completed")
+        self.assertIsNone(summary["correct"])
+        self.assertEqual(summary["total_reps"], 0)
+        self.assertEqual(summary["xp_earned"], 0)
+        self.assertEqual(detail.status_code, 200)
+        self.assertIsNone(detail.json()["correct"])
+        self.assertEqual(
+            detail.json()["report_json"]["stats"]["total_reps"], 0
+        )
 
     def _register(self, email: str) -> tuple[str, int]:
         response = self.client.post(

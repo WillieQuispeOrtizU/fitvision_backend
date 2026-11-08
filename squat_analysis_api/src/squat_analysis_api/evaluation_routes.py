@@ -63,7 +63,9 @@ def _evaluation_payload(
         "exercise": evaluation.exercise,
         "mode": evaluation.mode,
         "status": evaluation.status,
-        "correct": evaluation.correct,
+        # Preserve the tri-state contract for historical rows written before
+        # zero-repetition evaluations were stored as unclassified.
+        "correct": None if evaluation.total_reps == 0 else evaluation.correct,
         "total_reps": evaluation.total_reps,
         "correct_reps": evaluation.correct_reps,
         "incorrect_reps": evaluation.incorrect_reps,

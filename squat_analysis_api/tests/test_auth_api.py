@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -83,6 +83,20 @@ class AuthApiTest(unittest.TestCase):
 
         self.assertEqual(duplicate.status_code, 409)
 
+    def test_register_rejects_future_birth_date_without_persisting_account(self):
+        future_date = date.today() + timedelta(days=1)
+
+        response = self._register(birth_date=future_date.isoformat())
+
+        self.assertEqual(response.status_code, 422)
+        error = response.json()["detail"][0]
+        self.assertEqual(error["loc"], ["body", "birth_date"])
+        self.assertIn("must not be in the future", error["msg"])
+        with self.session_factory() as db:
+            self.assertEqual(db.scalar(select(func.count(AppUser.id))), 0)
+            self.assertEqual(db.scalar(select(func.count(AuthSession.id))), 0)
+            self.assertEqual(db.scalar(select(func.count(UserProgress.user_id))), 0)
+
     def test_login_and_current_user(self):
         self._register()
 
@@ -137,6 +151,24 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(updated.json()["height_cm"], 175.5)
         self.assertEqual(forbidden.status_code, 422)
 
+    def test_patch_rejects_future_birth_date_and_preserves_existing_value(self):
+        token = self._register().json()["access_token"]
+        future_date = date.today() + timedelta(days=1)
+
+        rejected = self.client.patch(
+            "/api/users/me",
+            headers=self._auth(token),
+            json={"birth_date": future_date.isoformat()},
+        )
+        current = self.client.get("/api/users/me", headers=self._auth(token))
+
+        self.assertEqual(rejected.status_code, 422)
+        error = rejected.json()["detail"][0]
+        self.assertEqual(error["loc"], ["body", "birth_date"])
+        self.assertIn("must not be in the future", error["msg"])
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json()["birth_date"], "2002-01-01")
+
     def test_logout_revokes_only_the_presented_session(self):
         token = self._register().json()["access_token"]
 
@@ -165,14 +197,19 @@ class AuthApiTest(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["database"]["status"], "ok")
 
-    def _register(self, *, email: str = "user@example.com"):
+    def _register(
+        self,
+        *,
+        email: str = "user@example.com",
+        birth_date: str = "2002-01-01",
+    ):
         return self.client.post(
             "/api/auth/register",
             json={
                 "email": email,
                 "password": "password",
                 "full_name": "Nombre",
-                "birth_date": "2002-01-01",
+                "birth_date": birth_date,
                 "height_cm": 173,
                 "weight_kg": 65,
                 "training_level": "beginner",
