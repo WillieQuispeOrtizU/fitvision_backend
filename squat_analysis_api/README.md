@@ -198,6 +198,81 @@ curl -X POST "$API_URL/api/auth/logout" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+### Password recovery (local development)
+
+Password recovery is intentionally disabled until its database migration and
+email settings are provided. Do not expose this flow through the current
+cleartext HTTP deployment: login credentials, recovery tokens, and codes must
+travel over HTTPS in any public environment.
+
+Apply the migration to a **local/development** PostgreSQL database before
+enabling the endpoints (do not run it against production without a reviewed
+deployment plan and backup):
+
+```bash
+psql "$PSQL_DATABASE_URL" \
+  -f migrations/20261113_add_password_reset_request.sql
+```
+
+`PSQL_DATABASE_URL` in that command means a libpq-compatible DSN such as
+`postgresql://user:password@127.0.0.1:5432/fitvision`. It is deliberately
+separate from the application's SQLAlchemy `DATABASE_URL`, which may contain
+the `postgresql+psycopg://` driver suffix that the `psql` CLI does not accept.
+
+Configure a server-only HMAC secret and an SMTP provider in `.env`; the real
+file is Git-ignored and credentials must never be committed. Relevant values
+and safe defaults are documented in `.env.example`. For Gmail, enable two-step
+verification, create an application password, and use:
+
+```env
+PASSWORD_RESET_EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURITY=starttls
+SMTP_USERNAME=sender@example.com
+SMTP_PASSWORD=<application-password>
+SMTP_FROM_EMAIL=sender@example.com
+```
+
+Use a unique random `PASSWORD_RESET_PEPPER` of at least 32 bytes. A convenient
+PowerShell generator is:
+
+```powershell
+[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+The flow exposes three public endpoints:
+
+- `POST /api/auth/password-reset/request` with `{ "email": "..." }` returns
+  `202` and the same generic message for known and unknown addresses.
+- `POST /api/auth/password-reset/verify` with `request_token` plus the six-digit
+  `code` returns a short-lived one-time `reset_token`.
+- `POST /api/auth/password-reset/complete` with `reset_token` and
+  `new_password` changes the Argon2id hash and revokes every previous session.
+
+Codes and reset tokens expire after ten minutes by default. Requests enforce a
+60-second resend cooldown, hourly per-address/per-IP limits, and at most five
+failed code attempts. Only hashes/fingerprints are persisted. SMTP delivery is
+performed after the generic response; a delivery failure invalidates that
+challenge without revealing whether the address exists.
+
+The current local implementation uses FastAPI `BackgroundTasks`, not a durable
+mail queue. A process stop immediately after a `202` response can therefore
+prevent delivery; the user may retry after the cooldown. Before a public/high-
+availability deployment, move delivery to a durable worker and schedule a
+retention job for old expired/used recovery rows.
+
+When Nginx is used, configure it to overwrite `X-Forwarded-For`, then list only
+the trusted proxy address (typically `127.0.0.1,::1`) in
+`PASSWORD_RESET_TRUSTED_PROXY_IPS`. Never trust forwarding headers from an
+arbitrary public peer.
+
+For a local end-to-end check, request a code for a non-production test account,
+confirm that it arrives, verify it once, complete the reset, and confirm that
+the new password logs in while the old password and all earlier Bearer sessions
+are rejected. No real SMTP credentials are required by the automated suite;
+it injects an in-memory sender.
+
 Upload a squat video with the token returned by register or login:
 
 ```bash

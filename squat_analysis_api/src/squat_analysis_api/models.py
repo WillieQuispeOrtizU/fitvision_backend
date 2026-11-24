@@ -59,6 +59,9 @@ class AppUser(Base):
     sessions: Mapped[list[AuthSession]] = relationship(
         back_populates="user", passive_deletes=True
     )
+    password_reset_requests: Mapped[list[PasswordResetRecord]] = relationship(
+        back_populates="user", passive_deletes=True
+    )
     progress: Mapped[UserProgress | None] = relationship(
         back_populates="user", uselist=False, passive_deletes=True
     )
@@ -105,6 +108,85 @@ class AuthSession(Base):
         UniqueConstraint("token_hash", name="auth_session_token_hash_key"),
         Index("ix_auth_session_expires_at", "expires_at"),
         Index("ix_auth_session_user_id", "user_id"),
+    )
+
+
+class PasswordResetRecord(Base):
+    """One short-lived password-reset challenge.
+
+    Email addresses, requester IPs, verification codes, and bearer-style reset
+    tokens are never persisted in plaintext. ``user_id`` is intentionally
+    nullable so unknown addresses follow the same observable request flow as
+    registered accounts.
+    """
+
+    __tablename__ = "password_reset_request"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        BIGINT,
+        ForeignKey("app_user.id", ondelete="CASCADE"),
+    )
+    request_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    email_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    requester_ip_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    failed_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reset_token_hash: Mapped[str | None] = mapped_column(String(64))
+    reset_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    user: Mapped[AppUser | None] = relationship(
+        back_populates="password_reset_requests"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "failed_attempts >= 0 AND failed_attempts <= 5",
+            name="chk_password_reset_attempts",
+        ),
+        CheckConstraint(
+            "expires_at > created_at", name="chk_password_reset_dates"
+        ),
+        CheckConstraint(
+            "(reset_token_hash IS NULL AND reset_token_expires_at IS NULL) OR "
+            "(reset_token_hash IS NOT NULL AND reset_token_expires_at IS NOT NULL)",
+            name="chk_password_reset_token_fields",
+        ),
+        UniqueConstraint(
+            "request_token_hash", name="password_reset_request_token_hash_key"
+        ),
+        UniqueConstraint(
+            "reset_token_hash", name="password_reset_reset_token_hash_key"
+        ),
+        Index(
+            "ux_password_reset_active_email",
+            "email_hash",
+            unique=True,
+            postgresql_where=text("used_at IS NULL AND invalidated_at IS NULL"),
+            sqlite_where=text("used_at IS NULL AND invalidated_at IS NULL"),
+        ),
+        Index("ix_password_reset_email_created", "email_hash", "created_at"),
+        Index(
+            "ix_password_reset_ip_created", "requester_ip_hash", "created_at"
+        ),
+        Index("ix_password_reset_user_id", "user_id"),
+        Index("ix_password_reset_expires_at", "expires_at"),
     )
 
 

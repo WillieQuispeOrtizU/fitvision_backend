@@ -170,6 +170,9 @@ def create_app(
     )
     from squat_analysis_api.evaluation_routes import router as evaluation_router
     from squat_analysis_api.gamification_routes import router as gamification_router
+    from squat_analysis_api.password_reset_routes import (
+        router as password_reset_router,
+    )
     from squat_analysis_api.evaluation_service import (
         create_queued_evaluation,
         fail_interrupted_evaluations,
@@ -209,6 +212,7 @@ def create_app(
         allow_headers=["*"],
     )
     app.include_router(auth_router)
+    app.include_router(password_reset_router)
     app.include_router(evaluation_router)
     app.include_router(gamification_router)
 

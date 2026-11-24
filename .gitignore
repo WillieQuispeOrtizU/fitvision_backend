@@ -8,6 +8,8 @@ __pycache__/
 #Files
 eval/Bad/*
 eval/Good/*
+/dataset/
+/squat_analysis_api/batch_results/
 .venv
 venv/
 .DS_Store

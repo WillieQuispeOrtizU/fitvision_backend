@@ -100,6 +100,40 @@ class AuthResponse(BaseModel):
     expires_at: datetime
 
 
+class PasswordResetRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=255)
+
+    _normalize_email = field_validator("email", mode="before")(_normalize_email)
+
+
+class PasswordResetRequestResponse(BaseModel):
+    message: str
+    request_token: str
+    expires_in_seconds: int
+    retry_after_seconds: int
+
+
+class PasswordResetVerifyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=32, max_length=512)
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class PasswordResetVerifyResponse(BaseModel):
+    reset_token: str
+    expires_in_seconds: int
+
+
+class PasswordResetCompletePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reset_token: str = Field(min_length=32, max_length=512)
+    new_password: str = Field(min_length=8, max_length=1024)
+
+
 class EvaluationSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
